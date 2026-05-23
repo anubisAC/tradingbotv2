@@ -1,0 +1,13 @@
+numpy
+pandas
+streamlit
+plotly
+python-dotenv
+alpaca-py
+yfinance
+xgboost
+hmmlearn
+scipy
+scikit-learn
+requests
+lxml
