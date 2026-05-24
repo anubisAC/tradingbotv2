@@ -2,8 +2,8 @@ name: Phase 3 AI Quant Trader
 
 on:
   schedule:
-    # Executes at 19:30 UTC (3:30 PM EDT) Monday through Friday.
-    - cron: '30 19 * * 1-5'
+    # Executes at 19:45 UTC (3:45 PM EDT) Monday through Friday.
+    - cron: '45 19 * * 1-5'
   workflow_dispatch:
 
 jobs:
