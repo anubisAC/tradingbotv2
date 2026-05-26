@@ -14,6 +14,7 @@ import os
 import time
 import json
 import argparse
+import tracemalloc
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import List, Dict, Tuple
@@ -1544,6 +1545,8 @@ def run_universe_audit():
 
 
 if __name__ == "__main__":
+    tracemalloc.start()
+    
     parser = argparse.ArgumentParser(description="AI Quant Trader (Phase 3)")
     parser.add_argument("--dry-run", action="store_true", help="Calculate targets without executing trades.")
     parser.add_argument("--enable-slicing", action="store_true",
@@ -1576,3 +1579,9 @@ if __name__ == "__main__":
         signals.run_cmda_diagnostic(dataset)
     else:
         run_strategy(dry_run=args.dry_run, enable_slicing=args.enable_slicing)
+
+    # Capture and convert memory to Megabytes
+    current, peak = tracemalloc.get_traced_memory()
+    print(f"\n📊 Peak RAM Usage: {peak / 1024 / 1024:.2f} MB")
+    
+    tracemalloc.stop()
