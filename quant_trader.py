@@ -1145,10 +1145,10 @@ class ExecutionEngine:
                 continue
             if sym not in latest_prices.index or pd.isna(latest_prices.loc[sym]):
                 # No price reference — flag for market sell
-                sells.append((sym, qty, None))
+                sells.append((sym, float(current_qtys[sym]), None))
                 continue
             price = float(latest_prices.loc[sym])
-            sells.append((sym, qty, round(price * (1 - pad), 2)))
+            sells.append((sym, float(current_qtys[sym]), round(price * (1 - pad), 2)))
 
         # Rebalance: trims (sells) + new positions / top-ups (buys)
         for sym in target_weights.index:
@@ -1166,7 +1166,8 @@ class ExecutionEngine:
             if qty <= 0:
                 continue
             if delta_notional < 0:
-                sells.append((sym, qty, round(price * (1 - pad), 2)))
+                safe_sell_qty = min(qty, float(current_qtys.get(sym, 0.0)))
+                sells.append((sym, safe_sell_qty, round(price * (1 - pad), 2)))
             else:
                 buys.append((sym, qty, round(price * (1 + pad), 2)))
 
