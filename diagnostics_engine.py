@@ -78,9 +78,9 @@ class FeatureIntegrityAudit:
             "summary": summary,
             "lookahead_bias_strength": lookahead_bias_strength,
             "interpretation": (
-                "⚠️ SEVERE" if lookahead_bias_strength > 0.05
-                else "🟡 MODERATE" if lookahead_bias_strength > 0.02
-                else "✅ MINIMAL"
+                "SEVERE" if lookahead_bias_strength > 0.05
+                else "MODERATE" if lookahead_bias_strength > 0.02
+                else "MINIMAL"
             ),
         }
 
@@ -126,9 +126,9 @@ class TargetLabelValidator:
                 "penny_stocks_detected": int(results["penny_stock_contamination"]),
             },
             "interpretation": (
-                "⚠️ DATA ISSUES" if np.mean(null_ratios) > 0.10 
-                else "✅ CLEAN" if np.mean(null_ratios) < 0.05
-                else "🟡 ACCEPTABLE"
+                "DATA ISSUES" if np.mean(null_ratios) > 0.10 
+                else "CLEAN" if np.mean(null_ratios) < 0.05
+                else "ACCEPTABLE"
             ),
         }
 
@@ -166,9 +166,9 @@ class ICtoReturnsTranslator:
             "ic_trap_indicator": {
                 "trap_strength": float(ic_trap_strength),
                 "interpretation": (
-                    "🚨 SEVERE IC TRAP" if ic_trap_strength > 0.3
-                    else "⚠️ MODERATE IC TRAP" if ic_trap_strength > 0.1
-                    else "✅ IC ALIGNED WITH RETURNS"
+                    "SEVERE IC TRAP" if ic_trap_strength > 0.3
+                    else "MODERATE IC TRAP" if ic_trap_strength > 0.1
+                    else "IC ALIGNED WITH RETURNS"
                 ),
             },
         }
@@ -265,7 +265,7 @@ class HoldingPeriodAnalysis:
             return {
                 "ic_by_holding_period": {},
                 "decay_rate_per_5days": 0.0,
-                "interpretation": f"⚠️ NO DATA (cols: {list(dataset_local.columns)})"
+                "interpretation": f"NO DATA (cols: {list(dataset_local.columns)})"
             }
 
         unique_dates = sorted(dataset_local['Date'].unique())
@@ -316,9 +316,9 @@ class HoldingPeriodAnalysis:
             "ic_by_holding_period": results,
             "decay_rate_per_5days": float(decay_rate),
             "interpretation": (
-                "🚨 RAPID DECAY" if decay_rate > 0.50
-                else "⚠️ MODERATE DECAY" if decay_rate > 0.20
-                else "✅ STABLE"
+                "RAPID DECAY" if decay_rate > 0.50
+                else "MODERATE DECAY" if decay_rate > 0.20
+                else "STABLE"
             ),
         }
 
@@ -365,8 +365,8 @@ class ExecutionFrictionAudit:
             "executed_count": len(executed_trades),
             "skip_rate": float(len(skipped_trades) / total) if total > 0 else 0.0,
             "interpretation": (
-                "🔴 MANY TRADES SKIPPED" if len(skipped_trades) > len(executed_trades)
-                else "✅ NORMAL EXECUTION"
+                "MANY TRADES SKIPPED" if len(skipped_trades) > len(executed_trades)
+                else "NORMAL EXECUTION"
             ),
         }
 
@@ -424,9 +424,9 @@ class RegimeDetectionValidator:
         results["alignment_check"] = {
             "alignment_score": float(alignment_score / 2.0),
             "interpretation": (
-                "✅ WELL-ALIGNED" if alignment_score >= 1.5
-                else "🟡 PARTIALLY-ALIGNED" if alignment_score >= 1.0
-                else "⚠️ MISALIGNED"
+                "WELL-ALIGNED" if alignment_score >= 1.5
+                else "PARTIALLY-ALIGNED" if alignment_score >= 1.0
+                else "MISALIGNED"
             ),
         }
         
@@ -448,8 +448,8 @@ class RegimeDetectionValidator:
             "average_regime_duration_days": float(total_days / (flips + 1)) if flips > 0 else float(total_days),
             "flip_frequency_pct": float(flips / total_days * 100) if total_days > 0 else 0.0,
             "interpretation": (
-                "🔴 VERY UNSTABLE" if total_days > 0 and flips / total_days > 0.20
-                else "🟡 SOMEWHAT UNSTABLE" if total_days > 0 and flips / total_days > 0.10
-                else "✅ STABLE"
+                "VERY UNSTABLE" if total_days > 0 and flips / total_days > 0.20
+                else "SOMEWHAT UNSTABLE" if total_days > 0 and flips / total_days > 0.10
+                else "STABLE"
             ),
         }

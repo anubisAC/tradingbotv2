@@ -114,7 +114,7 @@ class DataFetcher:
     def get_dynamic_universe(top_n: int = 50) -> Tuple[List[str], Dict[str, str]]:
         """Scrapes S&P 500 tickers and screens for highest Average Daily Dollar Volume.
         Also returns a {ticker: GICS sector} map for sector-concentration capping."""
-        print("🔍 Scanning S&P 500 for the most liquid stocks...")
+        print("Scanning S&P 500 for the most liquid stocks...")
         try:
             # Scrape current S&P 500 components with a User-Agent to bypass Wikipedia blocks
             import io
@@ -141,7 +141,7 @@ class DataFetcher:
             liquid_tickers = dollar_vol.dropna().sort_values(ascending=False).head(top_n).index.tolist()
             sector_map = {t: sector_map_full[t] for t in liquid_tickers if t in sector_map_full}
 
-            print(f"✅ Universe built: {len(liquid_tickers)} ultra-liquid stocks identified "
+            print(f"Universe built: {len(liquid_tickers)} ultra-liquid stocks identified "
                   f"across {len(set(sector_map.values()))} GICS sectors.")
             return liquid_tickers, sector_map
 
@@ -157,7 +157,7 @@ class DataFetcher:
         if "SPY" not in symbols:
             symbols = list(symbols) + ["SPY"]
 
-        print(f"📥 Fetching {period} of OHLC price data for {len(symbols)} symbols...")
+        print(f"Fetching {period} of OHLC price data for {len(symbols)} symbols...")
         df = yf.download(symbols, period=period, interval="1d", auto_adjust=True, progress=False)
 
         if df.empty or "Close" not in df.columns or "Open" not in df.columns:
@@ -193,7 +193,7 @@ class MarketRegimeHMM:
 
     def detect_regime(self) -> Tuple[str, float]:
         """Trains the HMM, maps the hidden states, and returns today's regime."""
-        print("🕵️‍♂️ Training HMM for Market Regime Detection...")
+        print("Training HMM for Market Regime Detection...")
         
         # Silence the harmless hmmlearn math warnings
         import warnings
@@ -327,9 +327,9 @@ class MLSignalGenerator:
             if not sanity_logged:
                 raw_std = p_raw.pct_change(1).std()
                 smooth_std = ret_1d.std()
-                print(f"📉 Causal EWMA smoothing applied (halflife=5) | "
+                print(f"Causal EWMA smoothing applied (halflife=5) | "
                       f"{ticker} ret_1d std: raw={raw_std:.5f} smoothed={smooth_std:.5f}")
-                print(f"🌙 Overnight/intraday decomposition | "
+                print(f"Overnight/intraday decomposition | "
                       f"{ticker} mean overnight_ret={overnight_ret.mean():.6f} "
                       f"mean intraday_ret={intraday_ret.mean():.6f}")
                 sanity_logged = True
@@ -367,7 +367,7 @@ class MLSignalGenerator:
         below = int((latest_data < latest_lower).sum().sum())
         above = int((latest_data > latest_upper).sum().sum())
         clipped_pct = (100.0 * (below + above) / total_cells) if total_cells > 0 else 0.0
-        print(f"🪟 MAD winsorization (k={self.MAD_WINSOR_K}): clipped "
+        print(f"MAD winsorization (k={self.MAD_WINSOR_K}): clipped "
               f"{clipped_pct:.2f}% of feature cells on {pd.Timestamp(latest).date()}")
 
         dataset[winsor_cols] = dataset[winsor_cols].clip(lower=lower, upper=upper)
@@ -711,7 +711,7 @@ class MLSignalGenerator:
         return out
 
     def calculate_ml_scores(self) -> pd.Series:
-        print("🤖 Training XGBoost on dynamic universe...")
+        print("Training XGBoost on dynamic universe...")
         dataset = self._engineer_features(self.prices)
         latest_date = dataset.index.max()
         train_data = dataset[dataset.index < (latest_date - pd.Timedelta(days=5))]
@@ -723,16 +723,16 @@ class MLSignalGenerator:
         model.fit(train_data[feature_cols], train_data["target_rank"])
 
         mean_ic, ic_ir = self._compute_rolling_rank_ic(dataset, feature_cols, window=60)
-        print(f"📊 Out-of-sample Rank IC (60d): {mean_ic:.3f}  |  IC IR: {ic_ir:.2f}")
+        print(f"Out-of-sample Rank IC (60d): {mean_ic:.3f}  |  IC IR: {ic_ir:.2f}")
         self.last_ic_metrics = {"mean_ic": mean_ic, "ic_ir": ic_ir, "window": 60}
 
         shuf_ic, shuf_ir = self._compute_shuffled_ic(dataset, feature_cols, window=60)
-        print(f"🧪 Shuffled-target IC (should be ~0): {shuf_ic:.4f}  IR: {shuf_ir:.2f}")
+        print(f"Shuffled-target IC (should be ~0): {shuf_ic:.4f}  IR: {shuf_ir:.2f}")
         self.last_ic_metrics["shuffled_ic"] = shuf_ic
         self.last_ic_metrics["shuffled_ir"] = shuf_ir
 
         wf = self._compute_walkforward_ic(dataset, feature_cols)
-        print(f"🚶 Walk-forward IC | walks={wf['n_walks']} test_days={wf['n_days']} "
+        print(f"Walk-forward IC | walks={wf['n_walks']} test_days={wf['n_days']} "
               f"mean={wf['mean_ic']:.4f} std={wf['std_ic']:.4f} "
               f"IR(ann)={wf['ic_ir_ann']:.2f} hit_rate={wf['hit_rate']:.2%}")
         self.last_ic_metrics["walkforward"] = wf
@@ -809,9 +809,9 @@ class MLSignalGenerator:
                     beta, *_ = np.linalg.lstsq(X, y, rcond=None)
                     residuals = y - X @ beta
                     today_df.loc[valid_tickers, "predicted_rank"] = residuals
-                    print(f"🧹 Sector-neutralized signal: residualized across {n_sectors} sectors")
+                    print(f"Sector-neutralized signal: residualized across {n_sectors} sectors")
                 except np.linalg.LinAlgError as e:
-                    print(f"⚠️ Sector residualization failed ({e}); using raw predictions.")
+                    print(f"WARNING: Sector residualization failed ({e}); using raw predictions.")
 
         return today_df["predicted_rank"]
 
@@ -898,12 +898,12 @@ class PortfolioOptimizer:
             w = w / w.sum()
 
             inv = self._calculate_inverse_vol_weights(selected_tickers)
-            print(f"🌳 HRP weights computed across {len(ordered)} cluster leaves{shrinkage_info}")
+            print(f"HRP weights computed across {len(ordered)} cluster leaves{shrinkage_info}")
             print(f"   HRP : {w.round(4).to_dict()}")
             print(f"   IVol: {inv.round(4).to_dict()}")
             return w
         except Exception as e:
-            print(f"⚠️ HRP failed ({e}); falling back to inverse-volatility weighting.")
+            print(f"WARNING: HRP failed ({e}); falling back to inverse-volatility weighting.")
             return self._calculate_inverse_vol_weights(selected_tickers)
 
     def calculate_kelly_weights(self, selected_tickers: List[str]) -> pd.Series:
@@ -918,7 +918,7 @@ class PortfolioOptimizer:
         returns = self.prices[selected_tickers].tail(window).pct_change().dropna()
 
         if len(returns) < 2 or returns.shape[1] < 2:
-            print("⚠️ Kelly: insufficient return history; falling back to equal-weight.")
+            print("WARNING: Kelly: insufficient return history; falling back to equal-weight.")
             return pd.Series(1.0 / len(selected_tickers), index=selected_tickers)
 
         mu = returns.mean().values  # daily mean excess return (rf = 0%)
@@ -929,7 +929,7 @@ class PortfolioOptimizer:
             cov_values = lw.covariance_
             shrinkage_info = f" (LW shrinkage λ={lw.shrinkage_:.3f})"
         except Exception as lw_err:
-            print(f"⚠️ Kelly LedoitWolf failed ({lw_err}); using raw sample covariance.")
+            print(f"WARNING: Kelly LedoitWolf failed ({lw_err}); using raw sample covariance.")
             cov_values = returns.cov().values
 
         # F* = Σ⁻¹·μ — pinv (not inv) keeps us upright on singular covariance.
@@ -942,13 +942,13 @@ class PortfolioOptimizer:
 
         total = float(f_frac.sum())
         if total <= 0:
-            print("⚠️ Kelly: all weights non-positive after clipping (negative μ basket); "
+            print("WARNING: Kelly: all weights non-positive after clipping (negative μ basket); "
                   "falling back to equal-weight.")
             weights = pd.Series(1.0 / len(selected_tickers), index=selected_tickers)
         else:
             weights = pd.Series(f_frac / total, index=selected_tickers)
 
-        print(f"📐 Kelly weights computed across {len(selected_tickers)} names "
+        print(f"Kelly weights computed across {len(selected_tickers)} names "
               f"(fraction={self.cfg.kelly_fraction:.2f}, cap={self.cfg.kelly_max_weight:.2f}){shrinkage_info}")
         print(f"   Kelly: {weights.round(4).to_dict()}")
         return weights
@@ -957,12 +957,12 @@ class PortfolioOptimizer:
         """Dispatcher: routes to Kelly or HRP per cfg.allocator. On the Kelly path,
         also computes HRP weights as a side-by-side diagnostic (logged, not used)."""
         if self.cfg.allocator == "kelly":
-            print(f"💼 Allocator: KELLY (fraction={self.cfg.kelly_fraction:.2f})")
+            print(f"Allocator: KELLY (fraction={self.cfg.kelly_fraction:.2f})")
             kelly_w = self.calculate_kelly_weights(selected_tickers)
             print("   [Diagnostic] HRP weights for the same basket (NOT used):")
             _ = self.calculate_hrp_weights(selected_tickers)
             return kelly_w
-        print("💼 Allocator: HRP")
+        print("Allocator: HRP")
         return self.calculate_hrp_weights(selected_tickers)
 
 class DrawdownController:
@@ -1039,13 +1039,13 @@ class HoldingsTracker:
         """Record a new entry if one doesn't already exist for the symbol."""
         if symbol not in self.holdings:
             self.holdings[symbol] = {"entry_price": price, "entry_date": date}
-            print(f"⏱️  TRACKING new entry for {symbol} @ ${price:.2f} on {date.date()}")
+            print(f"TRACKING new entry for {symbol} @ ${price:.2f} on {date.date()}")
             self._save_state()
 
     def clear(self, symbol: str) -> None:
         """Clear entry data for a symbol, e.g., after it's sold."""
         if symbol in self.holdings:
-            print(f"⏱️  CLEARING tracking for {symbol}")
+            print(f"CLEARING tracking for {symbol}")
             del self.holdings[symbol]
             self._save_state()
 
@@ -1104,13 +1104,13 @@ class ExecutionEngine:
     # ---- Phase 0: cancel stale work ------------------------------------------------
     def _cancel_all_open_orders(self, dry_run: bool):
         if dry_run:
-            print("🧹 [DRY] Would cancel all open orders.")
+            print("[DRY] Would cancel all open orders.")
             return
         try:
             responses = self.client.cancel_orders()
-            print(f"🧹 Cancelled {len(responses)} stale open order(s).")
+            print(f"Cancelled {len(responses)} stale open order(s).")
         except Exception as e:
-            print(f"⚠️ cancel_orders failed: {e}")
+            print(f"WARNING: cancel_orders failed: {e}")
 
     # ---- Slicing helpers ----------------------------------------------------------
     def _compute_slice_schedule(self, total_qty: float, num_children: int,
@@ -1174,7 +1174,7 @@ class ExecutionEngine:
         schedule = self._compute_slice_schedule(
             total_qty, self.cfg.slicing_num_children, self.cfg.slicing_convexity)
         display = [int(q) if q == int(q) else round(q, 4) for q in schedule]
-        print(f"🔪 SLICING {side_label} {sym} {total_qty} → {len(schedule)} children: {display}")
+        print(f"SLICING {side_label} {sym} {total_qty} → {len(schedule)} children: {display}")
 
         order_ids: List[str] = []
         sleep_seconds = (self.cfg.slicing_window_minutes * 60.0) / max(1, len(schedule) - 1)
@@ -1222,7 +1222,7 @@ class ExecutionEngine:
             # Time Stop: has the position been held too long?
             days_held = self.tracker.days_held(sym, today)
             if days_held >= self.cfg.time_stop_days:
-                print(f"🛑 TIME_STOP: {sym} held for {days_held} days (limit {self.cfg.time_stop_days}). Forcing exit.")
+                print(f"EXIT (TIME_STOP): {sym} held for {days_held} days (limit {self.cfg.time_stop_days}). Forcing exit.")
                 forced_sells.append(sym)
                 if not dry_run:
                     self.tracker.clear(sym)
@@ -1236,7 +1236,7 @@ class ExecutionEngine:
                     stop_price = entry_price * (1.0 - self.cfg.stop_loss_pct)
                     if current_price <= stop_price:
                         loss_pct = (current_price / entry_price) - 1.0
-                        print(f"🛑 STOP_LOSS: {sym} hit {loss_pct:.2%} loss (limit "
+                        print(f"EXIT (STOP_LOSS): {sym} hit {loss_pct:.2%} loss (limit "
                               f"{-self.cfg.stop_loss_pct:.2%}). Forcing exit.")
                         forced_sells.append(sym)
                         if not dry_run:
@@ -1319,7 +1319,7 @@ class ExecutionEngine:
 
         pending = list(order_ids)
         elapsed = 0
-        print(f"⏱️  Waiting up to {self.SELL_POLL_TIMEOUT}s for {len(pending)} sell(s) to fill...")
+        print(f"Waiting up to {self.SELL_POLL_TIMEOUT}s for {len(pending)} sell(s) to fill...")
 
         while pending and elapsed < self.SELL_POLL_TIMEOUT:
             time.sleep(self.SELL_POLL_INTERVAL)
@@ -1332,18 +1332,18 @@ class ExecutionEngine:
                         continue
                     still_open.append(oid)
                 except Exception as e:
-                    print(f"⚠️ status check failed for {oid}: {e}")
+                    print(f"WARNING: status check failed for {oid}: {e}")
                     still_open.append(oid)
             if len(still_open) < len(pending):
-                print(f"  ✅ {len(pending) - len(still_open)} filled — {len(still_open)} still open at {elapsed}s")
+                print(f"  {len(pending) - len(still_open)} filled — {len(still_open)} still open at {elapsed}s")
             pending = still_open
 
         if not pending:
-            print("✅ All sells confirmed done.")
+            print("All sells confirmed done.")
             return
 
         # Stragglers: cancel + market sell the unfilled remainder
-        print(f"⚡ Timeout: forcing market-sell on {len(pending)} hanging order(s).")
+        print(f"Timeout: forcing market-sell on {len(pending)} hanging order(s).")
         market_ids = []
         for oid in pending:
             try:
@@ -1357,9 +1357,9 @@ class ExecutionEngine:
                                          side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
                 new_order = self.client.submit_order(req)
                 market_ids.append(str(new_order.id))
-                print(f"  ⚡ {order.symbol}: market-sell {remaining} (cancelled limit)")
+                print(f"  {order.symbol}: market-sell {remaining} (cancelled limit)")
             except Exception as e:
-                print(f"⚠️ force-market-sell failed for {oid}: {e}")
+                print(f"WARNING: force-market-sell failed for {oid}: {e}")
 
         # Quick second wait for market orders to confirm
         if market_ids:
@@ -1377,7 +1377,7 @@ class ExecutionEngine:
                 if not market_ids:
                     break
             if market_ids:
-                print(f"⚠️ {len(market_ids)} market sell(s) still unconfirmed — proceeding anyway.")
+                print(f"WARNING: {len(market_ids)} market sell(s) still unconfirmed — proceeding anyway.")
 
     # ---- Phase 4 & 5: scale and submit buys ---------------------------------------
     def _submit_buys_with_cash_budget(self, buys, dry_run: bool, equity: float):
@@ -1398,18 +1398,18 @@ class ExecutionEngine:
             acct = self.client.get_account()
             cash_available = float(acct.non_marginable_buying_power)
         except Exception as e:
-            print(f"⚠️ Couldn't read non_marginable_buying_power, aborting buys: {e}")
+            print(f"WARNING: Couldn't read non_marginable_buying_power, aborting buys: {e}")
             return
 
         budget = cash_available * (1 - self.CASH_BUFFER)
-        print(f"\n💰 Non-marginable cash: ${cash_available:,.2f}  "
+        print(f"\nNon-marginable cash: ${cash_available:,.2f}  "
               f"| Budget after {self.CASH_BUFFER:.0%} buffer: ${budget:,.2f}  "
               f"| Buy basket: ${basket_cost:,.2f}")
 
         scale = 1.0
         if basket_cost > budget and basket_cost > 0:
             scale = budget / basket_cost
-            print(f"⚖️  Scaling all buys by {scale:.4f} to fit cash budget.")
+            print(f"Scaling all buys by {scale:.4f} to fit cash budget.")
 
         for sym, qty, limit_price in buys:
             scaled_qty = round(qty * scale, 4)
@@ -1433,7 +1433,7 @@ class ExecutionEngine:
         try:
             equity = float(self.client.get_account().equity)
         except Exception as e:
-            print(f"⚠️ Breaker: could not read equity ({e}); failing OPEN (allowing buys).")
+            print(f"WARNING: Breaker: could not read equity ({e}); failing OPEN (allowing buys).")
             return True, f"equity read failed: {e}"
 
         # Trigger 1: trailing HWM drawdown
@@ -1463,7 +1463,7 @@ class ExecutionEngine:
         # Circuit breaker preflight — runs BEFORE we cancel anything so the
         # decision is visible alongside the order plan log.
         allow_buys, reason = self._preflight_drawdown_check(dry_run)
-        print(f"🚨 Circuit breaker: {'ALLOW' if allow_buys else 'BLOCK BUYS'} — {reason}")
+        print(f"Circuit breaker: {'ALLOW' if allow_buys else 'BLOCK BUYS'} — {reason}")
 
         # Phase 0
         self._cancel_all_open_orders(dry_run)
@@ -1486,7 +1486,7 @@ class ExecutionEngine:
             target_weights, current_weights, current_qtys, equity, latest_prices,
             forced_sells=forced_sells, dry_run=dry_run
         )
-        print(f"📋 Plan: {len(sells)} sell(s), {len(buys)} buy(s), {len(new_entries)} new entries.")
+        print(f"Plan: {len(sells)} sell(s), {len(buys)} buy(s), {len(new_entries)} new entries.")
 
         # Record new entries BEFORE submitting buys.
         if not dry_run and new_entries:
@@ -1497,7 +1497,7 @@ class ExecutionEngine:
         # Asymmetric breaker enforcement: sells always proceed (so we can still
         # de-risk), but new buys are blocked until equity recovers.
         if not allow_buys and buys:
-            print(f"🛑 Breaker tripped — dropping {len(buys)} planned buy(s); sells will still execute to de-risk.")
+            print(f"Breaker tripped — dropping {len(buys)} planned buy(s); sells will still execute to de-risk.")
             buys = []
 
         # Phase 2 + 3
@@ -1594,9 +1594,9 @@ def run_strategy(dry_run: bool, enable_slicing: bool = False):
         if cfg.sector_cap_enabled and sector_map:
             top_tickers = apply_sector_cap(ranked, sector_map, cfg.top_n, cfg.max_names_per_sector)
             capped_sectors = {t: sector_map.get(t, "Unknown") for t in top_tickers}
-            print(f"🏛️  Sector cap applied (max {cfg.max_names_per_sector}/sector): {capped_sectors}")
+            print(f"Sector cap applied (max {cfg.max_names_per_sector}/sector): {capped_sectors}")
             if len(top_tickers) < cfg.top_n:
-                print(f"⚠️ Sector cap left only {len(top_tickers)} name(s) "
+                print(f"WARNING: Sector cap left only {len(top_tickers)} name(s) "
                       f"(< top_n={cfg.top_n}); HRP will allocate across the reduced basket.")
         else:
             top_tickers = ranked[:cfg.top_n]
@@ -1622,7 +1622,7 @@ def run_universe_audit():
     whether the inflated walk-forward IC under the today-screened panel is being
     driven by liquidity-rank look-ahead. Does NOT trade."""
     print("=" * 64)
-    print("🔬 UNIVERSE AUDIT — testing for liquidity-rank look-ahead")
+    print("UNIVERSE AUDIT — testing for liquidity-rank look-ahead")
     print("=" * 64)
 
     cfg = StrategyConfig()
@@ -1642,7 +1642,7 @@ def run_universe_audit():
         df_sp500['Symbol'].str.replace('.', '-', regex=False),
         df_sp500['GICS Sector']
     ))
-    print(f"📋 Loaded {len(sp500_tickers)} S&P 500 names from Wikipedia")
+    print(f"Loaded {len(sp500_tickers)} S&P 500 names from Wikipedia")
 
     ohlc = fetcher.fetch_daily_ohlc(sp500_tickers + ["SPY"], period="3y")
     closes = ohlc["Close"]
@@ -1656,7 +1656,7 @@ def run_universe_audit():
     closes = closes[common]
     opens = opens[common]
     volumes = volumes[common]
-    print(f"📊 Broad panel: {len(closes.columns)} tickers, {len(closes)} dates")
+    print(f"Broad panel: {len(closes.columns)} tickers, {len(closes)} dates")
 
     # Per-date dollar volume (close × volume)
     dollar_vol = closes.mul(volumes, fill_value=np.nan)
@@ -1701,13 +1701,13 @@ if __name__ == "__main__":
 
     # Fail-safe to ensure keys are loaded if not passed through Streamlit
     if not args.cmda and not args.audit_universe and not os.getenv("APCA_API_KEY_ID"):
-        print("🚨 Warning: No Alpaca API keys found in environment. Trades will fail unless --dry-run is used.")
+        print("Warning: No Alpaca API keys found in environment. Trades will fail unless --dry-run is used.")
 
     if args.audit_universe:
         run_universe_audit()
     elif args.cmda:
         print("=" * 64)
-        print("🔬 cMDA DIAGNOSTIC MODE — no trades will be placed")
+        print("cMDA DIAGNOSTIC MODE — no trades will be placed")
         print("=" * 64)
         cfg = StrategyConfig()
         fetcher = DataFetcher()
@@ -1724,6 +1724,6 @@ if __name__ == "__main__":
 
     # Capture and convert memory to Megabytes
     current, peak = tracemalloc.get_traced_memory()
-    print(f"\n📊 Peak RAM Usage: {peak / 1024 / 1024:.2f} MB")
+    print(f"\nPeak RAM Usage: {peak / 1024 / 1024:.2f} MB")
     
     tracemalloc.stop()

@@ -51,8 +51,8 @@ from diagnostics_engine import (
 load_dotenv()
 warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="Phase 3 AI Alpha", page_icon="🧠", layout="wide")
-st.title("🧠 Phase 3: AI Quant Terminal")
+st.set_page_config(page_title="Phase 3 AI Alpha", layout="wide")
+st.title("Phase 3: AI Quant Terminal")
 
 # -----------------------------------------------------------------------------
 # CONSTANTS / HELPERS
@@ -62,7 +62,7 @@ REGIME_FILL = {
     "NEUTRAL": "rgba(234, 179, 8, 0.15)",   # amber
     "BEAR":    "rgba(239, 68, 68, 0.15)",   # red
 }
-REGIME_ICON = {"BULL": "🟢", "NEUTRAL": "🟡", "BEAR": "🔴"}
+REGIME_ICON = {"BULL": "BULL", "NEUTRAL": "NEUTRAL", "BEAR": "BEAR"}
 ALLOC_COLOR = {"HRP": "#3b82f6", "Kelly": "#f59e0b"}
 
 SECTOR_COLORS = {
@@ -154,7 +154,7 @@ st.sidebar.info(
     "Alpaca credentials are loaded from `.env`."
 )
 
-st.sidebar.header("⚙️ Strategy Parameters")
+st.sidebar.header("Strategy Parameters")
 universe_size = st.sidebar.slider(
     "S&P 500 Screener Size", min_value=10, max_value=100, value=50, step=10,
     help="How many of the biggest, most actively traded S&P 500 stocks to analyze. 50 is the sweet spot.",
@@ -169,7 +169,7 @@ vol_lookback = st.sidebar.slider(
 )
 
 st.sidebar.divider()
-st.sidebar.header("💼 Allocator")
+st.sidebar.header("Allocator")
 allocator_label = st.sidebar.radio(
     "Weight Allocation Method", ["HRP", "Kelly"], horizontal=True,
     help="HRP = Hierarchical Risk Parity (López de Prado). "
@@ -186,7 +186,7 @@ kelly_max_weight = st.sidebar.slider(
     disabled=(allocator_label != "Kelly"),
 )
 
-with st.sidebar.expander("🛡️ Risk Controls"):
+with st.sidebar.expander("Risk Controls"):
     drawdown_floor_alpha = st.slider(
         "GZ Floor α", min_value=0.50, max_value=0.95, value=0.85, step=0.01,
         help="Grossman-Zhou drawdown floor. 0.85 = exposure linearly scales to 0 at 15% DD from HWM.",
@@ -201,7 +201,7 @@ with st.sidebar.expander("🛡️ Risk Controls"):
     )
     breaker_enabled = st.checkbox("Breaker Enabled", value=True)
 
-with st.sidebar.expander("🔪 Execution Slicing"):
+with st.sidebar.expander("Execution Slicing"):
     slicing_enabled = st.checkbox("Slicing Enabled", value=False)
     slicing_convexity = st.slider(
         "Convexity", min_value=1.0, max_value=4.0, value=2.0, step=0.5,
@@ -256,10 +256,10 @@ def make_config() -> StrategyConfig:
 # DASHBOARD TABS
 # -----------------------------------------------------------------------------
 tab_portfolio, tab_research, tab_diagnostics, tab_system_audit = st.tabs([
-    "📈 Live Portfolio Performance",
-    "🔬 AI Research & Manual Execution",
-    "🔬 Diagnostics",
-    "🛡️ System Audit Engine",
+    "Live Portfolio Performance",
+    "AI Research & Manual Execution",
+    "Diagnostics",
+    "System Audit Engine",
 ])
 
 # =============================================================================
@@ -304,7 +304,7 @@ with tab_portfolio:
 
             # ---- NEW: Risk Management Panel ----
             st.divider()
-            st.subheader("🛡️ Risk Management")
+            st.subheader("Risk Management")
             with st.container(border=True):
                 gz_path = Path(StrategyConfig().gz_state_path)
                 hwm = read_gz_state(gz_path, equity)
@@ -342,11 +342,11 @@ with tab_portfolio:
                 g4.metric("Circuit Breaker", breaker_label, help=breaker_reason)
 
                 if breaker_kind == "block":
-                    st.error(f"🚨 {breaker_reason}")
+                    st.error(f"BREAKER: {breaker_reason}")
                 elif breaker_kind == "allow":
-                    st.success(f"✅ {breaker_reason}")
+                    st.success(f"BREAKER: {breaker_reason}")
                 else:
-                    st.info(f"ℹ️ {breaker_reason}")
+                    st.info(f"BREAKER: {breaker_reason}")
 
             # ---- Equity curve ----
             st.divider()
@@ -419,7 +419,7 @@ with tab_portfolio:
 
             # ---- NEW: Open Orders + Cancel All ----
             st.divider()
-            st.subheader("📋 Open Orders")
+            st.subheader("Open Orders")
             try:
                 req = GetOrdersRequest(status=QueryOrderStatus.OPEN)
                 open_orders = client.get_orders(filter=req)
@@ -451,7 +451,7 @@ with tab_portfolio:
                         "I want to cancel ALL open orders", key="confirm_cancel_all_orders",
                     )
                     if co2.button(
-                        "🧹 Cancel All", disabled=not confirm_cancel,
+                        "Cancel All", disabled=not confirm_cancel,
                         type="secondary", use_container_width=True,
                     ):
                         try:
@@ -476,16 +476,16 @@ with tab_portfolio:
                                     f"{len(remaining)} still showing OPEN — refresh in a moment."
                                 )
                             else:
-                                st.success(f"✅ Cancelled {len(responses)} order(s).")
+                                st.success(f"Cancelled {len(responses)} order(s).")
                             st.rerun()
                         except Exception as e:
-                            st.error(f"❌ Cancel failed: {e}")
+                            st.error(f"Cancel failed: {e}")
             else:
                 st.info("No open orders.")
 
             # ---- Export Live Portfolio ----
             st.divider()
-            st.subheader("📋 Export Live Portfolio")
+            st.subheader("Export Live Portfolio")
             st.caption("Hover the box and click 'Copy' to share status with an AI.")
             report = f"**LIVE PORTFOLIO STATUS**\n"
             report += f"- **Total Equity:** ${equity:,.2f} ({daily_pnl:+,.2f} Today | {daily_pct:.2%})\n"
@@ -504,28 +504,28 @@ with tab_portfolio:
 # TAB 2: AI RESEARCH TERMINAL
 # =============================================================================
 with tab_research:
-    run_pipeline = st.button("🚀 Run Manual AI Calculation", type="primary")
+    run_pipeline = st.button("Run Manual AI Calculation", type="primary")
 
     if run_pipeline:
         cfg = make_config()
         if not cfg.alpaca_key or not cfg.alpaca_secret:
             st.error(
-                "🚨 Alpaca credentials not found in `.env`. "
+                "Alpaca credentials not found in `.env`. "
                 "Set `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` and restart the dashboard."
             )
             st.stop()
 
-        with st.spinner(f"🔍 Scanning S&P 500 for the top {cfg.universe_size} most liquid stocks..."):
+        with st.spinner(f"Scanning S&P 500 for the top {cfg.universe_size} most liquid stocks..."):
             fetcher = DataFetcher()
             dynamic_tickers, sector_map = fetcher.get_dynamic_universe(top_n=cfg.universe_size)
             cfg.universe = tuple(dynamic_tickers)
 
-        with st.spinner("📥 Fetching 3 years of market data..."):
+        with st.spinner("Fetching 3 years of market data..."):
             ohlc = fetcher.fetch_daily_ohlc(list(cfg.universe) + ["SPY"], period="3y")
             prices = ohlc["Close"]
             opens = ohlc["Open"]
 
-        with st.spinner("🕵️‍♂️ Running Hidden Markov Model for Regime Detection..."):
+        with st.spinner("Running Hidden Markov Model for Regime Detection..."):
             hmm_model = MarketRegimeHMM(prices)
             current_regime = hmm_model.detect_regime()
 
@@ -544,7 +544,7 @@ with tab_research:
         kelly_weights = pd.Series(dtype=float)
 
         if exposure > 0:
-            with st.spinner("🤖 Engineering features and training XGBoost..."):
+            with st.spinner("Engineering features and training XGBoost..."):
                 signals = MLSignalGenerator(cfg, prices, opens, sector_map=sector_map)
                 scores = signals.calculate_ml_scores()
 
@@ -631,7 +631,7 @@ with tab_research:
         ic_metrics = plan["ic_metrics"]
         if ic_metrics:
             st.divider()
-            st.subheader("📊 Model Quality (Out-of-Sample)")
+            st.subheader("Model Quality (Out-of-Sample)")
 
             mean_ic = ic_metrics.get("mean_ic", float("nan"))
             ic_ir = ic_metrics.get("ic_ir", float("nan"))
@@ -650,30 +650,30 @@ with tab_research:
             if pd.notna(wf_mean) and wf_days > 0:
                 quality_basis = "walk-forward"
                 if wf_mean > 0.03:
-                    quality = "✅ Tradeable"
+                    quality = "Tradeable"
                 elif wf_mean > 0.01:
-                    quality = "🟡 Marginal"
+                    quality = "Marginal"
                 elif wf_mean > 0:
-                    quality = "⚠️ Weak"
+                    quality = "Weak"
                 else:
-                    quality = "🔴 Negative"
+                    quality = "Negative"
             elif pd.notna(mean_ic):
                 quality_basis = "60d window"
                 if mean_ic > 0.03:
-                    quality = "✅ Tradeable"
+                    quality = "Tradeable"
                 elif mean_ic > 0.005:
-                    quality = "🟡 Marginal"
+                    quality = "Marginal"
                 elif mean_ic > 0:
-                    quality = "⚠️ Weak"
+                    quality = "Weak"
                 else:
-                    quality = "🔴 Negative"
+                    quality = "Negative"
             else:
                 quality_basis = "n/a"
-                quality = "❓ Insufficient data"
+                quality = "Insufficient data"
 
             # Leakage canary — shuffled IC < 0.02 (abs) = features are clean.
             shuf_clean = pd.notna(shuf_ic) and abs(shuf_ic) < 0.02
-            shuf_label = "✅ Clean" if shuf_clean else ("⚠️ Suspicious" if pd.notna(shuf_ic) else "N/A")
+            shuf_label = "Clean" if shuf_clean else ("Suspicious" if pd.notna(shuf_ic) else "N/A")
 
             with st.container(border=True):
                 # Headline row: signal quality verdict + the three walk-forward
@@ -706,14 +706,14 @@ with tab_research:
                 )
 
                 st.caption(
-                    f"📌 Walk-forward aggregated **{wf_days:d}** test days · "
+                    f"Walk-forward aggregated **{wf_days:d}** test days · "
                     f"Shuffled-target IC: **{shuf_ic:.4f}** ({shuf_label}) · "
                     f"Single-window IC ({window}d): **{mean_ic:.4f}**"
                     if pd.notna(wf_mean) and pd.notna(shuf_ic) and pd.notna(mean_ic)
                     else "Walk-forward metrics unavailable — see diagnostics below."
                 )
 
-                with st.expander("📐 Diagnostics & legacy metrics", expanded=False):
+                with st.expander("Diagnostics & legacy metrics", expanded=False):
                     d1, d2, d3, d4 = st.columns(4)
                     d1.metric(
                         f"Single-window IC ({window}d)",
@@ -739,7 +739,7 @@ with tab_research:
                              "|IC| < 0.02 = features are leak-free.",
                     )
                     st.caption(
-                        "⚠️ **Universe caveat.** ICs above use a **today-screened** "
+                        "**Universe caveat.** ICs above use a **today-screened** "
                         "top-50 panel (tickers selected by TODAY's dollar volume, then 3y "
                         "history loaded). Introduces liquidity-rank look-ahead. For a "
                         "point-in-time estimate that re-screens per walk on the full S&P "
@@ -752,7 +752,7 @@ with tab_research:
         if (regime_history is not None and not regime_history.empty
                 and not spy_prices.empty):
             st.divider()
-            st.subheader("🌡️ HMM Regime Timeline (SPY Overlay)")
+            st.subheader("HMM Regime Timeline (SPY Overlay)")
 
             common_idx = spy_prices.index.intersection(regime_history.index)
             spy_subset = spy_prices.loc[common_idx]
@@ -785,7 +785,7 @@ with tab_research:
                 )
 
             fig.update_layout(
-                title="SPY Price with HMM Regime Bands (🟢 Bull · 🟡 Neutral · 🔴 Bear)",
+                title="SPY Price with HMM Regime Bands (Bull · Neutral · Bear)",
                 xaxis_title="", yaxis_title="SPY Price ($)",
                 hovermode="x unified", showlegend=False, height=420,
             )
@@ -794,9 +794,9 @@ with tab_research:
             occ = (regime_subset.value_counts(normalize=True)
                    .reindex(["BULL", "NEUTRAL", "BEAR"]).fillna(0))
             oc1, oc2, oc3 = st.columns(3)
-            oc1.metric("🟢 Time in BULL", f"{occ['BULL']:.1%}")
-            oc2.metric("🟡 Time in NEUTRAL", f"{occ['NEUTRAL']:.1%}")
-            oc3.metric("🔴 Time in BEAR", f"{occ['BEAR']:.1%}")
+            oc1.metric("Time in BULL", f"{occ['BULL']:.1%}")
+            oc2.metric("Time in NEUTRAL", f"{occ['NEUTRAL']:.1%}")
+            oc3.metric("Time in BEAR", f"{occ['BEAR']:.1%}")
 
         # ---------------- Plan body (exposure > 0) ----------------
         if exposure > 0 and len(plan["top_tickers"]) > 0:
@@ -815,7 +815,7 @@ with tab_research:
             ).fillna(0).sort_values(by="Target Allocation", ascending=False)
 
             st.divider()
-            st.subheader("📊 Projected Execution Plan")
+            st.subheader("Projected Execution Plan")
             st.caption(
                 "**Predicted Rank:** XGBoost confidence (higher = more bullish). "
                 "**Target Allocation:** post-exposure portfolio slice."
@@ -843,7 +843,7 @@ with tab_research:
             top_tickers = plan["top_tickers"]
             if sector_map and top_tickers:
                 st.divider()
-                st.subheader("🥧 Sector Distribution")
+                st.subheader("Sector Distribution")
 
                 sector_rows = []
                 for t in top_tickers:
@@ -883,7 +883,7 @@ with tab_research:
             kelly_w = plan["kelly_weights"]
             if not hrp_w.empty and not kelly_w.empty:
                 st.divider()
-                st.subheader("⚖️ Allocator Comparison (HRP vs Kelly)")
+                st.subheader("Allocator Comparison (HRP vs Kelly)")
                 st.caption(
                     f"Currently using: **{allocator_now.upper()}** — change in sidebar to hot-swap "
                     "without re-running the pipeline."
@@ -920,7 +920,7 @@ with tab_research:
             latest_prices = plan["latest_prices"]
             if cfg_live.slicing_enabled and not target_weights.empty:
                 st.divider()
-                st.subheader("🔪 Order Slicing Preview")
+                st.subheader("Order Slicing Preview")
 
                 # Read live equity for accurate sizing; fall back to $100k
                 est_equity = 100_000.0
@@ -955,7 +955,7 @@ with tab_research:
                             delta_color="off",
                         )
                         sp3.metric(
-                            "Would Slice?", "🔪 Yes" if would_slice else "✋ No",
+                            "Would Slice?", "Yes" if would_slice else "No",
                             help=f"Slice threshold: ${threshold_notional:,.0f} "
                                  f"({cfg_live.slicing_threshold_pct:.0%} of equity).",
                         )
@@ -1003,14 +1003,14 @@ with tab_research:
 
             # ---------------- NEW: Execute Rebalance ----------------
             st.divider()
-            st.subheader("🚀 Execute Rebalance")
+            st.subheader("Execute Rebalance")
             with st.container(border=True):
                 exec_help_live = (
                     "Submit real orders to Alpaca "
                     + ("(**PAPER** account)" if is_paper else "(**LIVE MONEY**)")
                 )
                 st.markdown(
-                    f"**Account mode:** {'🟦 PAPER' if is_paper else '🔴 LIVE'} · "
+                    f"**Account mode:** {'PAPER' if is_paper else 'LIVE'} · "
                     f"**Allocator:** {allocator_now.upper()} · "
                     f"**Slicing:** {'ON' if cfg_live.slicing_enabled else 'OFF'} · "
                     f"**Breaker:** {'ON' if cfg_live.breaker_enabled else 'OFF'}"
@@ -1018,18 +1018,18 @@ with tab_research:
 
                 ex1, ex2 = st.columns(2)
                 run_dry = ex1.button(
-                    "🟦 Execute Dry-Run", type="secondary", use_container_width=True,
+                    "Execute Dry-Run", type="secondary", use_container_width=True,
                     help="Compute and log what would be done without submitting orders.",
                 )
 
                 with ex2:
                     confirm_live = st.checkbox(
-                        "⚠️ I confirm live execution",
+                        "I confirm live execution",
                         key="confirm_live_exec",
                         disabled=run_dry,
                     )
                     run_live = st.button(
-                        "🔴 Execute LIVE",
+                        "Execute LIVE",
                         type="primary", use_container_width=True,
                         disabled=not confirm_live,
                         help=exec_help_live,
@@ -1066,17 +1066,17 @@ with tab_research:
 
                     output = buf.getvalue()
                     if success:
-                        st.success(f"✅ {label} execution complete.")
+                        st.success(f"{label} execution complete.")
                     else:
-                        st.error(f"❌ {label} execution failed: {err_msg}")
+                        st.error(f"{label} execution failed: {err_msg}")
 
                     if output:
-                        with st.expander("📜 Engine Output", expanded=True):
+                        with st.expander("Engine Output", expanded=True):
                             st.code(output, language="text")
 
             # ---------------- Export Report ----------------
             st.divider()
-            st.subheader("📋 Export Run Report")
+            st.subheader("Export Run Report")
             st.caption("Hover the box and click 'Copy' in the top right to paste to your AI.")
             report = "**PHASE 3 PIPELINE RUN**\n"
             report += f"- **Regime:** {current_regime}\n"
@@ -1109,15 +1109,15 @@ with tab_research:
 
         elif exposure == 0:
             st.divider()
-            st.error("🚨 Market is currently in a BEAR Regime. XGBoost bypassed. System holds 100% Cash.")
+            st.error("Market is currently in a BEAR Regime. XGBoost bypassed. System holds 100% Cash.")
 
 # =============================================================================
 # TAB 3: DIAGNOSTICS (cMDA + Universe Audit)
 # =============================================================================
 with tab_diagnostics:
     sub_cmda, sub_audit = st.tabs([
-        "🧬 Feature Importance (cMDA)",
-        "🌐 Universe Audit",
+        "Feature Importance (cMDA)",
+        "Universe Audit",
     ])
 
     # ---------------------------------------------------------- cMDA sub-tab
@@ -1141,12 +1141,12 @@ with tab_diagnostics:
             help="More permutations stabilize the estimate at the cost of runtime.",
         )
 
-        run_cmda = st.button("🧬 Run cMDA Diagnostic", type="primary", key="run_cmda_btn")
+        run_cmda = st.button("Run cMDA Diagnostic", type="primary", key="run_cmda_btn")
 
         if run_cmda:
             cfg = make_config()
 
-            with st.spinner(f"🔍 Scanning S&P 500 for the top {cfg.universe_size} most liquid stocks..."):
+            with st.spinner(f"Scanning S&P 500 for the top {cfg.universe_size} most liquid stocks..."):
                 fetcher = DataFetcher()
                 dynamic_tickers, sector_map = fetcher.get_dynamic_universe(top_n=cfg.universe_size)
                 cfg.universe = tuple(dynamic_tickers)
@@ -1160,14 +1160,14 @@ with tab_diagnostics:
                 signals = MLSignalGenerator(cfg, prices, opens, sector_map=sector_map)
                 dataset = signals._engineer_features(prices)
 
-            with st.spinner(f"🧬 Running cMDA ({cmda_perms} permutations × clusters at d≤{cmda_threshold})..."):
+            with st.spinner(f"Running cMDA ({cmda_perms} permutations × clusters at d≤{cmda_threshold})..."):
                 cmda_df = signals.run_cmda_diagnostic(
                     dataset, dist_threshold=float(cmda_threshold),
                     n_permutations=int(cmda_perms),
                 )
 
             st.divider()
-            st.subheader("📋 Feature-Cluster Importance Ranking")
+            st.subheader("Feature-Cluster Importance Ranking")
             st.caption(
                 "**mean_importance** = baseline IC minus permuted IC (averaged over runs). "
                 "Positive = removing this cluster hurts predictions; near-zero = redundant or noise."
@@ -1193,19 +1193,19 @@ with tab_diagnostics:
             st.plotly_chart(fig_bar, use_container_width=True)
 
             st.divider()
-            st.subheader("📤 Export Results")
+            st.subheader("Export Results")
             ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
             csv_bytes = display_df.to_csv(index=False).encode("utf-8")
             json_bytes = cmda_df.to_json(orient="records", indent=2).encode("utf-8")
 
             d1, d2 = st.columns(2)
             d1.download_button(
-                "⬇️ Download CSV", data=csv_bytes,
+                "Download CSV", data=csv_bytes,
                 file_name=f"cmda_results_{ts}.csv", mime="text/csv",
                 width="stretch",
             )
             d2.download_button(
-                "⬇️ Download JSON", data=json_bytes,
+                "Download JSON", data=json_bytes,
                 file_name=f"cmda_results_{ts}.json", mime="application/json",
                 width="stretch",
             )
@@ -1229,19 +1229,19 @@ with tab_diagnostics:
             "**Observational only** — no trades are placed."
         )
         st.caption(
-            "⏱️ Heavy operation. Downloads 3y of OHLCV for ~500 tickers from "
+            "Heavy operation. Downloads 3y of OHLCV for ~500 tickers from "
             "yfinance, then runs walk-forward. Typically 1–3 minutes; longer on "
             "first run when the data isn't cached."
         )
 
-        run_audit = st.button("🔬 Run Universe Audit", type="primary", key="run_audit_btn")
+        run_audit = st.button("Run Universe Audit", type="primary", key="run_audit_btn")
 
         if run_audit:
             buf = io.StringIO()
             success = True
             err_msg = ""
             wf_result = None
-            with st.spinner("🌐 Auditing universe (pulling S&P 500 list + 3y OHLCV + walk-forward)…"):
+            with st.spinner("Auditing universe (pulling S&P 500 list + 3y OHLCV + walk-forward)…"):
                 try:
                     with contextlib.redirect_stdout(buf):
                         wf_result = run_universe_audit()
@@ -1256,9 +1256,9 @@ with tab_diagnostics:
                     "computed_at": pd.Timestamp.now(),
                 }
             elif not success:
-                st.error(f"❌ Audit failed: {err_msg}")
+                st.error(f"Audit failed: {err_msg}")
                 if buf.getvalue():
-                    with st.expander("📜 Partial output", expanded=True):
+                    with st.expander("Partial output", expanded=True):
                         st.code(buf.getvalue(), language="text")
 
         # Render cached audit result (survives Streamlit reruns)
@@ -1303,10 +1303,10 @@ with tab_diagnostics:
                          "Higher = picks rotate less between adjacent walks.",
                 )
 
-            with st.expander("📜 Full audit output", expanded=False):
+            with st.expander("Full audit output", expanded=False):
                 st.code(cached["stdout"], language="text")
 
-            st.subheader("📤 Copy Report")
+            st.subheader("Copy Report")
             audit_report = "**UNIVERSE AUDIT — broad S&P 500 + per-walk rescreening**\n"
             audit_report += f"- **Mean IC:** {wf_r.get('mean_ic', float('nan')):.4f}\n"
             audit_report += f"- **Std IC:** {wf_r.get('std_ic', float('nan')):.4f}\n"
@@ -1333,7 +1333,7 @@ with tab_system_audit:
         top_tickers = plan.get("top_tickers", [])
         regime_history = plan.get("regime_history", pd.DataFrame())
         
-        run_full_audit = st.button("🛡️ Execute Full Pipeline Audit", type="primary", use_container_width=True)
+        run_full_audit = st.button("Execute Full Pipeline Audit", type="primary", use_container_width=True)
         
         if run_full_audit and not full_prices.empty:
             cfg = make_config()
@@ -1384,7 +1384,7 @@ with tab_system_audit:
             dataset_oos["_pred"] = model.predict(X_test)
             
             st.caption(
-                f"🔎 Diagnostic dataset: {len(dataset_clean):,} rows across "
+                f"Diagnostic dataset: {len(dataset_clean):,} rows across "
                 f"{len(unique_dates)} dates · train ≤ {train_cutoff_date.date()} "
                 f"({len(train_df):,} rows) · test > {train_cutoff_date.date()} "
                 f"({len(test_df):,} rows)"
@@ -1439,7 +1439,7 @@ with tab_system_audit:
             st.divider()
             
             # --- ROW 1: Upstream Integrity ---
-            st.markdown("### 🌊 Upstream Integrity")
+            st.markdown("### Upstream Integrity")
             u1, u2 = st.columns(2)
             with u1:
                 with st.container(border=True):
@@ -1456,7 +1456,7 @@ with tab_system_audit:
                     st.caption(f"Average Null Ratio: {dq.get('avg_null_ratio', 0):.2%} | Penny Stocks: {dq.get('penny_stocks_detected', 0)}")
             
             # --- ROW 2: Signal Dynamics ---
-            st.markdown("### 📡 Signal Dynamics")
+            st.markdown("### Signal Dynamics")
             s1, s2 = st.columns(2)
             with s1:
                 with st.container(border=True):
@@ -1475,7 +1475,7 @@ with tab_system_audit:
                         st.json(res_comp5.get("ic_by_holding_period", {}))
 
             # --- ROW 3: Risk Architecture ---
-            st.markdown("### 🛡️ Risk Architecture")
+            st.markdown("### Risk Architecture")
             r1, r2 = st.columns(2)
             with r1:
                 with st.container(border=True):
@@ -1504,7 +1504,7 @@ with tab_system_audit:
                         st.error("Regime history insufficient for validation.")
 
             # --- ROW 4: Execution Layer ---
-            st.markdown("### ⚙️ Execution Layer")
+            st.markdown("### Execution Layer")
             with st.container(border=True):
                 st.markdown("**6. Execution Friction Audit**")
                 st.metric("Min Weight Drift Setup", res_comp6.get("interpretation", "N/A"),
@@ -1518,10 +1518,10 @@ with tab_system_audit:
 
             # --- ROW 5: Export Report ---
             st.divider()
-            st.subheader("📤 Export Audit Report")
+            st.subheader("Export Audit Report")
             st.caption("Hover the box and click 'Copy' in the top right to share with your AI.")
             
-            report = "**🛡️ SYSTEM AUDIT ENGINE REPORT**\n\n"
+            report = "**SYSTEM AUDIT ENGINE REPORT**\n\n"
             
             report += "**1. Upstream Integrity**\n"
             report += f"- **Feature Bias:** {res_comp1.get('interpretation', 'N/A')} (Strength: {res_comp1.get('lookahead_bias_strength', 0):.4f})\n"
