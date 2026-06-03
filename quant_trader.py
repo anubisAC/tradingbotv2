@@ -74,6 +74,7 @@ class StrategyConfig:
     # Sector Concentration Cap
     max_names_per_sector: int = 2       # at most N picks from any one GICS sector
     sector_cap_enabled: bool = True
+    sector_neutralize_signal: bool = True
 
     # Intraday Circuit Breaker (executes at order-submission time, complements GZ)
     breaker_enabled: bool = True
@@ -787,7 +788,8 @@ class MLSignalGenerator:
         # targets raw cross-sectional rank. Regress predicted_rank on sector
         # dummies and replace with residuals so the surviving signal is the
         # within-sector component (skip if no sector_map or only one sector).
-        if self.sector_map:
+        # NOTE: When True, reported walk-forward IC (on raw predictions) will not match this traded signal.
+        if self.cfg.sector_neutralize_signal and self.sector_map:
             sectors_today = pd.Series(
                 {t: self.sector_map.get(t) for t in today_df.index}
             ).dropna()
