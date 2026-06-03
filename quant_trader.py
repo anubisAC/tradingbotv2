@@ -71,6 +71,12 @@ class StrategyConfig:
     drawdown_leverage_k: float = 1.0
     gz_state_path: str = "gz_state.json"
 
+    # Exit Discipline
+    time_stop_days: int = 5            # force re-eval/exit after N holding days
+    stop_loss_pct: float = 0.08        # hard stop on unrealized loss per name
+    exit_discipline_enabled: bool = True
+    holdings_state_path: str = "holdings_state.json"
+
     # Sector Concentration Cap
     max_names_per_sector: int = 2       # at most N picks from any one GICS sector
     sector_cap_enabled: bool = True
@@ -999,6 +1005,64 @@ class DrawdownController:
         return float(np.clip(self.k * raw, 0.0, 1.0))
 
 
+class HoldingsTracker:
+    """Tracks entry price and date for each holding to power time stops and stop losses."""
+
+    def __init__(self, state_path: str):
+        self.state_path = state_path
+        self.holdings = self._load_state()
+
+    def _load_state(self) -> Dict:
+        try:
+            with open(self.state_path, "r") as f:
+                state = json.load(f)
+                for sym, data in state.items():
+                    if 'entry_date' in data and data['entry_date']:
+                        state[sym]['entry_date'] = datetime.fromisoformat(data['entry_date'])
+                return state
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+
+    def _save_state(self) -> None:
+        try:
+            serializable_state = {}
+            for sym, data in self.holdings.items():
+                serializable_state[sym] = data.copy()
+                if 'entry_date' in data and isinstance(data['entry_date'], datetime):
+                    serializable_state[sym]['entry_date'] = data['entry_date'].isoformat()
+            with open(self.state_path, "w") as f:
+                json.dump(serializable_state, f, indent=2)
+        except OSError as e:
+            print(f"⚠️ Could not persist holdings state to {self.state_path}: {e}")
+
+    def record_entry(self, symbol: str, price: float, date: datetime) -> None:
+        """Record a new entry if one doesn't already exist for the symbol."""
+        if symbol not in self.holdings:
+            self.holdings[symbol] = {"entry_price": price, "entry_date": date}
+            print(f"⏱️  TRACKING new entry for {symbol} @ ${price:.2f} on {date.date()}")
+            self._save_state()
+
+    def clear(self, symbol: str) -> None:
+        """Clear entry data for a symbol, e.g., after it's sold."""
+        if symbol in self.holdings:
+            print(f"⏱️  CLEARING tracking for {symbol}")
+            del self.holdings[symbol]
+            self._save_state()
+
+    def days_held(self, symbol: str, today: datetime) -> int:
+        """Calculate days held. If entry date not tracked, returns 0."""
+        if symbol in self.holdings and 'entry_date' in self.holdings[symbol]:
+            entry_date = self.holdings[symbol]['entry_date']
+            if isinstance(entry_date, str):
+                entry_date = datetime.fromisoformat(entry_date)
+            return (today - entry_date).days
+        return 0
+
+    def entry_price(self, symbol: str) -> float | None:
+        """Get the recorded entry price for a symbol."""
+        return self.holdings.get(symbol, {}).get("entry_price")
+
+
 class ExecutionEngine:
     """
     Cash-only state machine:
@@ -1021,6 +1085,7 @@ class ExecutionEngine:
         self.cfg = config
         self.client = TradingClient(config.alpaca_key, config.alpaca_secret, paper=config.is_paper)
         self.gz: "DrawdownController | None" = None
+        self.tracker = HoldingsTracker(config.holdings_state_path)
         self._session_open_equity: float | None = None
 
     def attach_gz_controller(self, gz: "DrawdownController") -> None:
@@ -1134,17 +1199,74 @@ class ExecutionEngine:
         return order_ids
 
     # ---- Phase 1: build the plan ---------------------------------------------------
+    def _apply_exit_discipline(self, current_qtys: Dict[str, float], latest_prices: pd.Series,
+                               dry_run: bool) -> List[str]:
+        """Check for and apply time stops and stop losses. Returns list of symbols to force-sell."""
+        if not self.cfg.exit_discipline_enabled:
+            return []
+
+        forced_sells = []
+        today = datetime.now(timezone.utc)
+
+        # First, clean up stale tracker entries for positions that no longer exist.
+        for sym in list(self.tracker.holdings.keys()):
+            if sym not in current_qtys or current_qtys.get(sym, 0) <= 0:
+                if not dry_run:
+                    self.tracker.clear(sym)
+
+        # Next, check current positions for exit signals.
+        for sym, qty in current_qtys.items():
+            if qty <= 0:
+                continue
+
+            # Time Stop: has the position been held too long?
+            days_held = self.tracker.days_held(sym, today)
+            if days_held >= self.cfg.time_stop_days:
+                print(f"🛑 TIME_STOP: {sym} held for {days_held} days (limit {self.cfg.time_stop_days}). Forcing exit.")
+                forced_sells.append(sym)
+                if not dry_run:
+                    self.tracker.clear(sym)
+                continue
+
+            # Stop Loss: has the position lost too much value?
+            entry_price = self.tracker.entry_price(sym)
+            if entry_price is not None and sym in latest_prices.index:
+                current_price = latest_prices.loc[sym]
+                if pd.notna(current_price) and entry_price > 0:
+                    stop_price = entry_price * (1.0 - self.cfg.stop_loss_pct)
+                    if current_price <= stop_price:
+                        loss_pct = (current_price / entry_price) - 1.0
+                        print(f"🛑 STOP_LOSS: {sym} hit {loss_pct:.2%} loss (limit "
+                              f"{-self.cfg.stop_loss_pct:.2%}). Forcing exit.")
+                        forced_sells.append(sym)
+                        if not dry_run:
+                            self.tracker.clear(sym)
+
+        return list(set(forced_sells))
+
     def _build_order_plan(self, target_weights: pd.Series, current_weights: Dict[str, float],
                           current_qtys: Dict[str, float], equity: float,
-                          latest_prices: pd.Series):
-        """Return (sells, buys) where each entry is (symbol, qty, limit_price)."""
-        sells, buys = [], []
+                          latest_prices: pd.Series, forced_sells: List[str], dry_run: bool):
+        """Return (sells, buys, new_entries) where new_entries is (symbol, price)."""
+        sells, buys, new_entries = [], [], []
         pad = self.cfg.limit_order_padding
+
+        # Forced exits from exit discipline are always full liquidations.
+        for sym in forced_sells:
+            if sym in current_qtys and current_qtys[sym] > 0:
+                price = float(latest_prices.loc[sym]) if sym in latest_prices.index and pd.notna(latest_prices.loc[sym]) else None
+                sells.append((sym, float(current_qtys[sym]), round(price * (1 - pad), 2) if price else None))
 
         # Out-of-universe liquidations (drop-from-top-N): close full position
         for sym, qty in current_qtys.items():
+            if sym in forced_sells:
+                continue
             if sym in target_weights.index or qty <= 0:
                 continue
+
+            if not dry_run:
+                self.tracker.clear(sym)
+
             if sym not in latest_prices.index or pd.isna(latest_prices.loc[sym]):
                 # No price reference — flag for market sell
                 sells.append((sym, float(current_qtys[sym]), None))
@@ -1154,6 +1276,8 @@ class ExecutionEngine:
 
         # Rebalance: trims (sells) + new positions / top-ups (buys)
         for sym in target_weights.index:
+            if sym in forced_sells:
+                continue
             tgt_w = float(target_weights.loc[sym])
             cur_w = current_weights.get(sym, 0.0)
             drift = abs(tgt_w - cur_w)
@@ -1170,10 +1294,14 @@ class ExecutionEngine:
             if delta_notional < 0:
                 safe_sell_qty = min(qty, float(current_qtys.get(sym, 0.0)))
                 sells.append((sym, safe_sell_qty, round(price * (1 - pad), 2)))
+                if tgt_w == 0 and not dry_run and sym in current_qtys:
+                    self.tracker.clear(sym)
             else:
                 buys.append((sym, qty, round(price * (1 + pad), 2)))
+                if current_qtys.get(sym, 0) <= 0:
+                    new_entries.append((sym, price))
 
-        return sells, buys
+        return sells, buys, new_entries
 
     # ---- Phase 2: submit sells -----------------------------------------------------
     def _submit_sells(self, sells, dry_run: bool, equity: float) -> List[str]:
@@ -1350,10 +1478,21 @@ class ExecutionEngine:
                 raise e
         print(f"\nAccount Equity: ${equity:,.2f}")
 
+        # Exit discipline pre-flight
+        forced_sells = self._apply_exit_discipline(current_qtys, latest_prices, dry_run)
+
         # Phase 1
-        sells, buys = self._build_order_plan(target_weights, current_weights,
-                                             current_qtys, equity, latest_prices)
-        print(f"📋 Plan: {len(sells)} sell(s), {len(buys)} buy(s).\n")
+        sells, buys, new_entries = self._build_order_plan(
+            target_weights, current_weights, current_qtys, equity, latest_prices,
+            forced_sells=forced_sells, dry_run=dry_run
+        )
+        print(f"📋 Plan: {len(sells)} sell(s), {len(buys)} buy(s), {len(new_entries)} new entries.")
+
+        # Record new entries BEFORE submitting buys.
+        if not dry_run and new_entries:
+            today = datetime.now(timezone.utc)
+            for sym, price in new_entries:
+                self.tracker.record_entry(sym, price, today)
 
         # Asymmetric breaker enforcement: sells always proceed (so we can still
         # de-risk), but new buys are blocked until equity recovers.
