@@ -37,6 +37,15 @@ from quant_trader import (
     apply_sector_cap,
     run_universe_audit,
 )
+from diagnostics_engine import (
+    FeatureIntegrityAudit,
+    TargetLabelValidator,
+    ICtoReturnsTranslator,
+    AllocatorStressTest,
+    HoldingPeriodAnalysis,
+    ExecutionFrictionAudit,
+    RegimeDetectionValidator
+)
 
 load_dotenv()
 warnings.filterwarnings("ignore")
@@ -245,10 +254,11 @@ def make_config() -> StrategyConfig:
 # -----------------------------------------------------------------------------
 # DASHBOARD TABS
 # -----------------------------------------------------------------------------
-tab_portfolio, tab_research, tab_diagnostics = st.tabs([
+tab_portfolio, tab_research, tab_diagnostics, tab_system_audit = st.tabs([
     "📈 Live Portfolio Performance",
     "🔬 AI Research & Manual Execution",
     "🔬 Diagnostics",
+    "🛡️ System Audit Engine",
 ])
 
 # =============================================================================
@@ -569,6 +579,7 @@ with tab_research:
             "kelly_weights": kelly_weights,
             "latest_prices": prices.iloc[-1] if not prices.empty else pd.Series(dtype=float),
             "spy_prices": prices["SPY"].copy() if "SPY" in prices.columns else pd.Series(dtype=float),
+            "full_prices": prices.copy() if not prices.empty else pd.DataFrame(),
             "computed_at": pd.Timestamp.now(),
         }
 
@@ -1303,3 +1314,199 @@ with tab_diagnostics:
             audit_report += f"- **Walks / Test Days:** {wf_r.get('n_walks', 0)} / {wf_r.get('n_days', 0)}\n"
             audit_report += f"- **Universe Jaccard:** {jaccard:.1%}\n" if pd.notna(jaccard) else ""
             st.code(audit_report, language="markdown")
+
+# =============================================================================
+# TAB 4: SYSTEM AUDIT ENGINE
+# =============================================================================
+with tab_system_audit:
+    st.markdown(
+        "Run the complete 7-component diagnostic engine to empirically isolate value creation "
+        "and destruction across your entire quantitative pipeline."
+    )
+    
+    if "plan" not in st.session_state or "full_prices" not in st.session_state.plan:
+        st.info("👆 Please run the **Manual AI Calculation** in the Research tab first to populate the session data.")
+    else:
+        plan = st.session_state.plan
+        full_prices = plan.get("full_prices", pd.DataFrame())
+        top_tickers = plan.get("top_tickers", [])
+        regime_history = plan.get("regime_history", pd.DataFrame())
+        
+        run_full_audit = st.button("🛡️ Execute Full Pipeline Audit", type="primary", use_container_width=True)
+        
+        if run_full_audit and not full_prices.empty:
+            cfg = make_config()
+            
+            # --- PROGRESS BAR UI ---
+            progress_text = "Initializing Audit Engine..."
+            audit_bar = st.progress(0, text=progress_text)
+            
+            # --- DATA PREP ---
+            audit_bar.progress(10, text="Fetching Open prices for decomposition...")
+            fetcher = DataFetcher()
+            ohlc = fetcher.fetch_daily_ohlc(list(full_prices.columns), period="1y")
+            opens = ohlc["Open"]
+            
+            audit_bar.progress(20, text="Engineering feature dataset for signal analysis...")
+            signals = MLSignalGenerator(cfg, full_prices, opens)
+            dataset = signals._engineer_features(full_prices)
+            
+            # --- EXECUTE 7 COMPONENTS ---
+            audit_bar.progress(30, text="Comp 1: Auditing Feature Integrity...")
+            f_audit = FeatureIntegrityAudit(full_prices, opens)
+            res_comp1 = f_audit.detect_lookahead_bias(["ret_1d"])
+            
+            audit_bar.progress(40, text="Comp 2: Validating Target Labels...")
+            t_audit = TargetLabelValidator(full_prices)
+            res_comp2 = t_audit.validate_forward_return_calculation()
+            
+            audit_bar.progress(50, text="Comp 3: Analyzing IC Translation...")
+            c3_data = dataset.dropna(subset=['target_rank', 'target_fwd_ret'])
+            if not c3_data.empty:
+                res_comp3 = ICtoReturnsTranslator.compute_ic_return_decomposition(
+                    c3_data['target_rank'], c3_data['target_fwd_ret']
+                )
+            else:
+                res_comp3 = {"ic_trap_indicator": {"interpretation": "N/A", "trap_strength": 0}, "realized_statistics": {}}
+                
+            audit_bar.progress(60, text="Comp 4: Stress-Testing Allocators...")
+            a_audit = AllocatorStressTest()
+            res_comp4 = a_audit.compare_allocators_on_history(full_prices, top_tickers, cfg)
+            
+            audit_bar.progress(70, text="Comp 5: Computing Alpha Decay...")
+            h_audit = HoldingPeriodAnalysis()
+            res_comp5 = h_audit.compute_alpha_decay_curve(dataset)
+            
+            audit_bar.progress(80, text="Comp 6: Simulating Execution Friction...")
+            e_audit = ExecutionFrictionAudit()
+            mock_targets = pd.Series({t: 1.0/max(1, len(top_tickers)) for t in top_tickers})
+            mock_current = {t: (1.0/max(1, len(top_tickers))) * 0.96 for t in top_tickers}
+            res_comp6 = e_audit.simulate_min_weight_drift_impact(mock_targets, mock_current, cfg.min_weight_drift)
+            
+            audit_bar.progress(90, text="Comp 7: Validating Regime Architecture...")
+            r_audit = RegimeDetectionValidator()
+            res_comp7_align = r_audit.validate_regime_classification(regime_history, full_prices)
+            res_comp7_persis = r_audit.measure_regime_persistence(regime_history)
+            
+            audit_bar.progress(100, text="Audit Complete.")
+            time.sleep(0.5)
+            audit_bar.empty()
+            
+            # =========================================================
+            # RENDER AESTHETIC DASHBOARD
+            # =========================================================
+            st.divider()
+            
+            # --- ROW 1: Upstream Integrity ---
+            st.markdown("### 🌊 Upstream Integrity")
+            u1, u2 = st.columns(2)
+            with u1:
+                with st.container(border=True):
+                    st.markdown("**1. Feature Integrity & Lookahead**")
+                    st.metric("Bias Strength", f"{res_comp1.get('lookahead_bias_strength', 0):.4f}", 
+                              delta=res_comp1["interpretation"], delta_color="off")
+                    with st.expander("View Sub-metrics"):
+                        st.json(res_comp1.get("summary", {}))
+            with u2:
+                with st.container(border=True):
+                    st.markdown("**2. Target Label Construction**")
+                    st.metric("Data Quality", res_comp2["interpretation"])
+                    dq = res_comp2.get("data_quality", {})
+                    st.caption(f"Average Null Ratio: {dq.get('avg_null_ratio', 0):.2%} | Penny Stocks: {dq.get('penny_stocks_detected', 0)}")
+            
+            # --- ROW 2: Signal Dynamics ---
+            st.markdown("### 📡 Signal Dynamics")
+            s1, s2 = st.columns(2)
+            with s1:
+                with st.container(border=True):
+                    st.markdown("**3. Rank IC vs. Absolute Returns**")
+                    ic_trap = res_comp3.get("ic_trap_indicator", {})
+                    st.metric("IC Trap Strength", f"{ic_trap.get('trap_strength', 0):.4f}", 
+                              delta=ic_trap.get("interpretation", "N/A"), delta_color="off")
+                    with st.expander("View Realized Statistics"):
+                        st.json(res_comp3.get("realized_statistics", {}))
+            with s2:
+                with st.container(border=True):
+                    st.markdown("**5. Alpha Time Decay**")
+                    st.metric("5-Day Decay Rate", f"{res_comp5.get('decay_rate_per_5days', 0):.2%}", 
+                              delta=res_comp5.get("interpretation", "N/A"), delta_color="inverse")
+                    with st.expander("View IC by Holding Period"):
+                        st.json(res_comp5.get("ic_by_holding_period", {}))
+
+            # --- ROW 3: Risk Architecture ---
+            st.markdown("### 🛡️ Risk Architecture")
+            r1, r2 = st.columns(2)
+            with r1:
+                with st.container(border=True):
+                    st.markdown("**4. Allocator Stress Test (HRP vs Kelly)**")
+                    if "error" not in res_comp4:
+                        div = res_comp4.get("weight_divergence", {})
+                        st.metric("Mean Absolute Divergence", f"{div.get('mean_absolute_diff', 0):.2%}",
+                                  help=f"Max divergence on ticker: {div.get('max_divergence_ticker', 'N/A')}")
+                        with st.expander("View Concentration Metrics"):
+                            st.json(res_comp4.get("concentration_metrics", {}))
+                    else:
+                        st.error(res_comp4["error"])
+            with r2:
+                with st.container(border=True):
+                    st.markdown("**7. HMM Regime Validation**")
+                    if "error" not in res_comp7_align and "error" not in res_comp7_persis:
+                        align = res_comp7_align.get("alignment_check", {})
+                        st.metric("Market Alignment", align.get("interpretation", "N/A"), 
+                                  delta=res_comp7_persis.get("interpretation", "N/A"), delta_color="off")
+                        with st.expander("View Regime Statistics"):
+                            st.write("**Alignment:**")
+                            st.json({k: v for k, v in res_comp7_align.items() if k != "alignment_check"})
+                            st.write("**Persistence:**")
+                            st.json({k: v for k, v in res_comp7_persis.items() if k not in ["interpretation"]})
+                    else:
+                        st.error("Regime history insufficient for validation.")
+
+            # --- ROW 4: Execution Layer ---
+            st.markdown("### ⚙️ Execution Layer")
+            with st.container(border=True):
+                st.markdown("**6. Execution Friction Audit**")
+                st.metric("Min Weight Drift Setup", res_comp6.get("interpretation", "N/A"),
+                          help=f"Evaluated at current cfg.min_weight_drift = {cfg.min_weight_drift:.1%}")
+                
+                ec1, ec2, ec3 = st.columns(3)
+                ec1.metric("Simulated Skip Rate", f"{res_comp6.get('skip_rate', 0):.1%}")
+                ec2.metric("Executed Trades", res_comp6.get('executed_count', 0))
+                ec3.metric("Skipped Trades", res_comp6.get('skipped_count', 0))
+
+            # --- ROW 5: Export Report ---
+            st.divider()
+            st.subheader("📤 Export Audit Report")
+            st.caption("Hover the box and click 'Copy' in the top right to share with your AI.")
+            
+            report = "**🛡️ SYSTEM AUDIT ENGINE REPORT**\n\n"
+            
+            report += "**1. Upstream Integrity**\n"
+            report += f"- **Feature Bias:** {res_comp1.get('interpretation', 'N/A')} (Strength: {res_comp1.get('lookahead_bias_strength', 0):.4f})\n"
+            dq = res_comp2.get('data_quality', {})
+            report += f"- **Target Label:** {res_comp2.get('interpretation', 'N/A')} (Avg Nulls: {dq.get('avg_null_ratio', 0):.2%}, Penny Stocks: {dq.get('penny_stocks_detected', 0)})\n\n"
+            
+            report += "**2. Signal Dynamics**\n"
+            ic_trap = res_comp3.get('ic_trap_indicator', {})
+            report += f"- **IC Trap:** {ic_trap.get('interpretation', 'N/A')} (Strength: {ic_trap.get('trap_strength', 0):.4f})\n"
+            report += f"- **Alpha Decay (5d):** {res_comp5.get('interpretation', 'N/A')} (Rate: {res_comp5.get('decay_rate_per_5days', 0):.2%})\n\n"
+            
+            report += "**3. Risk Architecture**\n"
+            if "error" not in res_comp4:
+                div = res_comp4.get('weight_divergence', {})
+                report += f"- **Allocator Stress:** HRP vs Kelly Divergence {div.get('mean_absolute_diff', 0):.2%}\n"
+            else:
+                report += f"- **Allocator Stress:** Error - {res_comp4['error']}\n"
+            
+            if "error" not in res_comp7_align and "error" not in res_comp7_persis:
+                align = res_comp7_align.get('alignment_check', {})
+                report += f"- **Regime Alignment:** {align.get('interpretation', 'N/A')}\n"
+                report += f"- **Regime Persistence:** {res_comp7_persis.get('interpretation', 'N/A')}\n\n"
+            else:
+                report += f"- **Regime Validation:** Error - Insufficient history\n\n"
+                
+            report += "**4. Execution Layer**\n"
+            report += f"- **Min Weight Drift:** {cfg.min_weight_drift:.1%}\n"
+            report += f"- **Friction Impact:** {res_comp6.get('interpretation', 'N/A')} (Skip Rate: {res_comp6.get('skip_rate', 0):.1%})\n"
+            
+            st.code(report, language="markdown")
