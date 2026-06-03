@@ -242,11 +242,27 @@ class HoldingPeriodAnalysis:
         else:
             dataset_local = dataset.copy()
 
+        # Normalize index-level column names to 'Date' / 'Ticker'. The engineered
+        # feature frame may name these levels differently (e.g. 'Symbol', 'ticker',
+        # or an unnamed level that resets to 'level_0'/'level_1').
+        if "Ticker" not in dataset_local.columns:
+            for cand in ["ticker", "Symbol", "symbol", "asset", "level_1"]:
+                if cand in dataset_local.columns:
+                    dataset_local = dataset_local.rename(columns={cand: "Ticker"})
+                    break
+        if "Date" not in dataset_local.columns:
+            for cand in ["date", "level_0", "index"]:
+                if cand in dataset_local.columns:
+                    dataset_local = dataset_local.rename(columns={cand: "Date"})
+                    break
+
         if "Date" not in dataset_local.columns or "Ticker" not in dataset_local.columns:
+            # Still missing after normalization — surface the actual columns so the
+            # mismatch is debuggable instead of silently returning NO DATA.
             return {
                 "ic_by_holding_period": {},
                 "decay_rate_per_5days": 0.0,
-                "interpretation": "⚠️ NO DATA"
+                "interpretation": f"⚠️ NO DATA (cols: {list(dataset_local.columns)})"
             }
 
         unique_dates = sorted(dataset_local['Date'].unique())
