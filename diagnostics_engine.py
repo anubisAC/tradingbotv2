@@ -232,31 +232,55 @@ class HoldingPeriodAnalysis:
     @staticmethod
     def compute_alpha_decay_curve(
         dataset: pd.DataFrame,
+        predictions_col: str = "_pred"
     ) -> Dict:
         """Measure IC at different holding periods."""
         results = {}
         
+        if isinstance(dataset.index, pd.MultiIndex):
+            dataset_local = dataset.reset_index()
+        else:
+            dataset_local = dataset.copy()
+
+        if "Date" not in dataset_local.columns or "Ticker" not in dataset_local.columns:
+            return {
+                "ic_by_holding_period": {},
+                "decay_rate_per_5days": 0.0,
+                "interpretation": "⚠️ NO DATA"
+            }
+
+        unique_dates = sorted(dataset_local['Date'].unique())
+        
         for hold_days in [1, 5, 10, 20]:
             ics = []
             
-            unique_dates = sorted(dataset.index.unique())
             for i in range(len(unique_dates) - hold_days):
                 current_date = unique_dates[i]
                 target_date = unique_dates[i + hold_days]
                 
-                current_data = dataset.loc[[current_date]]
-                target_data = dataset.loc[[target_date]]
+                current_data = dataset_local[dataset_local['Date'] == current_date]
+                target_data = dataset_local[dataset_local['Date'] == target_date]
                 
-                if len(current_data) < 5 or len(target_data) < 5:
+                if len(current_data) < 5 or len(target_data) < 5 or predictions_col not in current_data.columns:
                     continue
                 
-                if "target_rank" in current_data.columns and "target_fwd_ret" in target_data.columns:
-                    ic, _ = spearmanr(
-                        current_data["target_rank"].values,
-                        target_data["target_fwd_ret"].values,
-                    )
-                    if pd.notna(ic):
-                        ics.append(float(ic))
+                # Align by ticker
+                merged = pd.merge(
+                    current_data[['Ticker', predictions_col]],
+                    target_data[['Ticker', 'target_fwd_ret']],
+                    on='Ticker',
+                    how='inner'
+                ).dropna()
+                
+                if len(merged) < 5:
+                    continue
+                
+                ic, _ = spearmanr(
+                    merged[predictions_col],
+                    merged['target_fwd_ret'],
+                )
+                if pd.notna(ic):
+                    ics.append(float(ic))
             
             if ics:
                 results[f"{hold_days}d"] = {

@@ -20,6 +20,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import xgboost as xgb
 from dotenv import load_dotenv
 
 from alpaca.trading.client import TradingClient
@@ -1351,6 +1352,37 @@ with tab_system_audit:
             signals = MLSignalGenerator(cfg, full_prices, opens)
             dataset = signals._engineer_features(full_prices)
             
+            # --- TRAIN OOS MODEL FOR DIAGNOSTICS 3 & 5 ---
+            audit_bar.progress(25, text="Training diagnostic XGBoost model...")
+            feature_cols = [
+                "ret_1d", "ret_5d", "ret_20d", "vol_20d", "rsi_14", "ma_slope",
+                "overnight_ret", "intraday_ret", "overnight_ret_5d",
+                "overnight_neg", "rv_w", "rv_m",
+            ]
+            
+            # Drop rows where target or all features are NA
+            dataset_clean = dataset.dropna(subset=['target_rank'] + feature_cols, how='any')
+            
+            # Time-based split
+            unique_dates = sorted(dataset_clean.index.get_level_values('Date').unique())
+            train_cutoff_idx = int(len(unique_dates) * 0.7)
+            train_cutoff_date = unique_dates[train_cutoff_idx]
+            
+            train_df = dataset_clean[dataset_clean.index.get_level_values('Date') <= train_cutoff_date]
+            test_df = dataset_clean[dataset_clean.index.get_level_values('Date') > train_cutoff_date]
+
+            X_train, y_train = train_df[feature_cols], train_df["target_rank"]
+            X_test = test_df[feature_cols]
+
+            model = xgb.XGBRegressor(
+                n_estimators=100, max_depth=3, learning_rate=0.05, random_state=42
+            )
+            model.fit(X_train, y_train)
+            
+            # Add predictions to a copy of the test set
+            dataset_oos = test_df.copy()
+            dataset_oos["_pred"] = model.predict(X_test)
+            
             # --- EXECUTE 7 COMPONENTS ---
             audit_bar.progress(30, text="Comp 1: Auditing Feature Integrity...")
             f_audit = FeatureIntegrityAudit(full_prices, opens)
@@ -1361,10 +1393,10 @@ with tab_system_audit:
             res_comp2 = t_audit.validate_forward_return_calculation()
             
             audit_bar.progress(50, text="Comp 3: Analyzing IC Translation...")
-            c3_data = dataset.dropna(subset=['target_rank', 'target_fwd_ret'])
+            c3_data = dataset_oos.dropna(subset=['_pred', 'target_fwd_ret'])
             if not c3_data.empty:
                 res_comp3 = ICtoReturnsTranslator.compute_ic_return_decomposition(
-                    c3_data['target_rank'], c3_data['target_fwd_ret']
+                    c3_data['_pred'], c3_data['target_fwd_ret']
                 )
             else:
                 res_comp3 = {"ic_trap_indicator": {"interpretation": "N/A", "trap_strength": 0}, "realized_statistics": {}}
@@ -1375,13 +1407,17 @@ with tab_system_audit:
             
             audit_bar.progress(70, text="Comp 5: Computing Alpha Decay...")
             h_audit = HoldingPeriodAnalysis()
-            res_comp5 = h_audit.compute_alpha_decay_curve(dataset)
+            # Pass the dataset with predictions for decay analysis
+            dataset_with_preds = dataset.copy()
+            dataset_with_preds.loc[dataset_oos.index, '_pred'] = dataset_oos['_pred']
+            res_comp5 = h_audit.compute_alpha_decay_curve(dataset_with_preds)
             
             audit_bar.progress(80, text="Comp 6: Simulating Execution Friction...")
             e_audit = ExecutionFrictionAudit()
-            mock_targets = pd.Series({t: 1.0/max(1, len(top_tickers)) for t in top_tickers})
-            mock_current = {t: (1.0/max(1, len(top_tickers))) * 0.96 for t in top_tickers}
-            res_comp6 = e_audit.simulate_min_weight_drift_impact(mock_targets, mock_current, cfg.min_weight_drift)
+            allocator_now = cfg.allocator
+            target_weights = (plan["hrp_weights"] if allocator_now == "hrp"
+                              else plan["kelly_weights"])
+            res_comp6 = e_audit.simulate_min_weight_drift_impact(target_weights, {}, cfg.min_weight_drift)
             
             audit_bar.progress(90, text="Comp 7: Validating Regime Architecture...")
             r_audit = RegimeDetectionValidator()
@@ -1473,6 +1509,7 @@ with tab_system_audit:
                 ec1.metric("Simulated Skip Rate", f"{res_comp6.get('skip_rate', 0):.1%}")
                 ec2.metric("Executed Trades", res_comp6.get('executed_count', 0))
                 ec3.metric("Skipped Trades", res_comp6.get('skipped_count', 0))
+                st.caption("Simulation assumes a cold start (100% cash) against the current plan's target weights.")
 
             # --- ROW 5: Export Report ---
             st.divider()
