@@ -237,7 +237,10 @@ class HoldingPeriodAnalysis:
         """Measure IC at different holding periods."""
         results = {}
         
-        if isinstance(dataset.index, pd.MultiIndex):
+        # Reset whenever the index carries label info (MultiIndex OR a named single
+        # index like 'Date'), so those levels become real columns. Only a plain
+        # unnamed RangeIndex should be left as-is.
+        if isinstance(dataset.index, pd.MultiIndex) or dataset.index.name is not None:
             dataset_local = dataset.reset_index()
         else:
             dataset_local = dataset.copy()
