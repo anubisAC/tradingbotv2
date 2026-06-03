@@ -1407,10 +1407,8 @@ with tab_system_audit:
             
             audit_bar.progress(70, text="Comp 5: Computing Alpha Decay...")
             h_audit = HoldingPeriodAnalysis()
-            # Pass the dataset with predictions for decay analysis
-            dataset_with_preds = dataset.copy()
-            dataset_with_preds.loc[dataset_oos.index, '_pred'] = dataset_oos['_pred']
-            res_comp5 = h_audit.compute_alpha_decay_curve(dataset_with_preds)
+            # dataset_oos already carries the held-out '_pred' column; pass it directly.
+            res_comp5 = h_audit.compute_alpha_decay_curve(dataset_oos)
             
             audit_bar.progress(80, text="Comp 6: Simulating Execution Friction...")
             e_audit = ExecutionFrictionAudit()
