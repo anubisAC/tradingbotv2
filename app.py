@@ -1345,7 +1345,7 @@ with tab_system_audit:
             # --- DATA PREP ---
             audit_bar.progress(10, text="Fetching Open prices for decomposition...")
             fetcher = DataFetcher()
-            ohlc = fetcher.fetch_daily_ohlc(list(full_prices.columns), period="1y")
+            ohlc = fetcher.fetch_daily_ohlc(list(full_prices.columns), period="3y")
             opens = ohlc["Open"]
             
             audit_bar.progress(20, text="Engineering feature dataset for signal analysis...")
@@ -1382,6 +1382,13 @@ with tab_system_audit:
             # Add predictions to a copy of the test set
             dataset_oos = test_df.copy()
             dataset_oos["_pred"] = model.predict(X_test)
+            
+            st.caption(
+                f"🔎 Diagnostic dataset: {len(dataset_clean):,} rows across "
+                f"{len(unique_dates)} dates · train ≤ {train_cutoff_date.date()} "
+                f"({len(train_df):,} rows) · test > {train_cutoff_date.date()} "
+                f"({len(test_df):,} rows)"
+            )
             
             # --- EXECUTE 7 COMPONENTS ---
             audit_bar.progress(30, text="Comp 1: Auditing Feature Integrity...")
