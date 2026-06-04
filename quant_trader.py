@@ -88,6 +88,7 @@ class StrategyConfig:
     breaker_enabled: bool = True
     breaker_dd_from_hwm: float = 0.07   # if live DD from HWM exceeds 7%, refuse new buys
     breaker_dd_intraday: float = 0.03   # if today's session DD exceeds 3%, refuse new buys
+    breaker_force_liquidate: bool = False
 
     # HRP Covariance Estimator
     use_ledoit_wolf: bool = True        # shrink sample cov before HRP; A/B toggle
@@ -1421,22 +1422,22 @@ class ExecutionEngine:
                 sym, scaled_qty, limit_price, OrderSide.BUY, dry_run, equity)
 
     # ---- Circuit breaker (asymmetric: blocks buys, never sells) -------------------
-    def _preflight_drawdown_check(self, dry_run: bool) -> Tuple[bool, str]:
-        """Returns (allow_buys, reason). Sells are always allowed — the breaker
+    def _preflight_drawdown_check(self, dry_run: bool) -> Tuple[bool, str, str]:
+        """Returns (allow_buys, trigger_type, reason). Sells are always allowed — the breaker
         only blocks NEW exposure. Two independent triggers:
           1. Trailing HWM drawdown (from the persisted GZ state) exceeds breaker_dd_from_hwm.
           2. Today's session drawdown (vs. equity at first call) exceeds breaker_dd_intraday.
         """
         if not self.cfg.breaker_enabled:
-            return True, "breaker disabled"
+            return True, "ok", "breaker disabled"
         if dry_run:
-            return True, "dry run — breaker informational only"
+            return True, "ok", "dry run — breaker informational only"
 
         try:
             equity = float(self.client.get_account().equity)
         except Exception as e:
             print(f"WARNING: Breaker: could not read equity ({e}); failing OPEN (allowing buys).")
-            return True, f"equity read failed: {e}"
+            return True, "ok", f"equity read failed: {e}"
 
         # Trigger 1: trailing HWM drawdown
         if self.gz is not None:
@@ -1445,27 +1446,26 @@ class ExecutionEngine:
             if hwm > 0:
                 trailing_dd = max(0.0, (hwm - equity) / hwm)
                 if trailing_dd >= self.cfg.breaker_dd_from_hwm:
-                    return False, (f"trailing DD {trailing_dd:.2%} ≥ "
-                                   f"limit {self.cfg.breaker_dd_from_hwm:.2%} "
-                                   f"(HWM ${hwm:,.2f}, equity ${equity:,.2f})")
+                    return False, "hwm", (f"trailing DD {trailing_dd:.2%} ≥ "
+                                          f"limit {self.cfg.breaker_dd_from_hwm:.2%} "
+                                          f"(HWM ${hwm:,.2f}, equity ${equity:,.2f})")
 
         # Trigger 2: intraday DD vs. first-seen-this-session equity
         if self._session_open_equity is None:
             self._session_open_equity = equity
         intraday_dd = max(0.0, (self._session_open_equity - equity) / self._session_open_equity)
         if intraday_dd >= self.cfg.breaker_dd_intraday:
-            return False, (f"session DD {intraday_dd:.2%} ≥ "
-                           f"limit {self.cfg.breaker_dd_intraday:.2%} "
-                           f"(session open ${self._session_open_equity:,.2f}, equity ${equity:,.2f})")
+            return False, "intraday", (f"session DD {intraday_dd:.2%} ≥ "
+                                      f"limit {self.cfg.breaker_dd_intraday:.2%} "
+                                      f"(session open ${self._session_open_equity:,.2f}, equity ${equity:,.2f})")
 
-        return True, f"OK (trailing DD acceptable, session DD {intraday_dd:.2%})"
+        return True, "ok", f"OK (trailing DD acceptable, session DD {intraday_dd:.2%})"
 
     # ---- Orchestrator --------------------------------------------------------------
     def send_rebalance_orders(self, target_weights: pd.Series, latest_prices: pd.Series, dry_run: bool):
         # Circuit breaker preflight — runs BEFORE we cancel anything so the
         # decision is visible alongside the order plan log.
-        allow_buys, reason = self._preflight_drawdown_check(dry_run)
-        print(f"Circuit breaker: {'ALLOW' if allow_buys else 'BLOCK BUYS'} — {reason}")
+        allow_buys, trigger_type, reason = self._preflight_drawdown_check(dry_run)
 
         # Phase 0
         self._cancel_all_open_orders(dry_run)
@@ -1479,6 +1479,22 @@ class ExecutionEngine:
             else:
                 raise e
         print(f"\nAccount Equity: ${equity:,.2f}")
+
+        # Breaker logic must run AFTER account snapshot to know what to liquidate.
+        liquidate_all = (
+            not allow_buys
+            and trigger_type == 'hwm'
+            and self.cfg.breaker_force_liquidate
+        )
+
+        if liquidate_all:
+            print(f"BREAKER: force-liquidating all positions due to HWM breach. Reason: {reason}")
+            # Override target_weights to zero for all current holdings to force full liquidation.
+            target_weights = pd.Series(0.0, index=list(current_weights.keys()))
+        elif not allow_buys:
+            print(f"BREAKER: blocking buys only. Reason: {reason}")
+        else:
+            print(f"Circuit breaker: ALLOW — {reason}")
 
         # Exit discipline pre-flight
         forced_sells = self._apply_exit_discipline(current_qtys, latest_prices, dry_run)
@@ -1498,8 +1514,9 @@ class ExecutionEngine:
 
         # Asymmetric breaker enforcement: sells always proceed (so we can still
         # de-risk), but new buys are blocked until equity recovers.
-        if not allow_buys and buys:
-            print(f"Breaker tripped — dropping {len(buys)} planned buy(s); sells will still execute to de-risk.")
+        if not allow_buys:
+            if buys:
+                print(f"Breaker tripped — dropping {len(buys)} planned buy(s).")
             buys = []
 
         # Phase 2 + 3
