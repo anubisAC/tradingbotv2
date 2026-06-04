@@ -201,6 +201,12 @@ class AttributionBacktest:
             if not top_tickers:
                 continue
 
+            selected_sectors = {sector_map.get(t) for t in top_tickers if sector_map.get(t)}
+            cap_theoretical_max = (
+                len(selected_sectors) * config.max_names_per_sector
+                if use_sector_cap and sector_map else config.top_n
+            )
+
             if allocation_method == "hrp":
                 optimizer = PortfolioOptimizer(config, train_closes)
                 weights = optimizer.calculate_hrp_weights(top_tickers)
@@ -364,6 +370,10 @@ class AttributionBacktest:
                 "hmm_exposure": hmm_exposure,
                 "gz_exposure": gz_exposure,
                 "final_exposure": final_exposure,
+                "requested_top_n": config.top_n,
+                "selected_names": len(top_tickers),
+                "selected_sectors": len(selected_sectors),
+                "sector_cap_theoretical_max": cap_theoretical_max,
                 "gross_weight": float(positive_weights.sum()),
                 "open_positions": len(simulated_holdings),
                 "forced_exits": period_exit_count,

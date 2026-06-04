@@ -1494,6 +1494,16 @@ with tab_diagnostics:
                 exposures = data.get("exposures", pd.DataFrame())
                 if isinstance(exposures, pd.DataFrame) and not exposures.empty:
                     st.subheader("Live Overlay Exposure Path")
+                    summary_cols = st.columns(4)
+                    if "selected_names" in exposures.columns:
+                        summary_cols[0].metric("Avg Selected Names", f"{exposures['selected_names'].mean():.1f}")
+                    if "selected_sectors" in exposures.columns:
+                        summary_cols[1].metric("Avg Active Sectors", f"{exposures['selected_sectors'].mean():.1f}")
+                    if "open_positions" in exposures.columns:
+                        summary_cols[2].metric("Avg Open Positions", f"{exposures['open_positions'].mean():.1f}")
+                    if "forced_exits" in exposures.columns:
+                        summary_cols[3].metric("Forced Exits / Rebal", f"{exposures['forced_exits'].mean():.2f}")
+
                     exp_cols = [c for c in ["hmm_exposure", "gz_exposure", "final_exposure"] if c in exposures.columns]
                     fig_exp = px.line(
                         exposures[exp_cols],
@@ -1535,6 +1545,16 @@ with tab_diagnostics:
                 report += f"- **R-Squared:** {metrics['r_squared']:.3f}\n"
                 report += f"- **Annualized Sharpe:** {metrics['annualized_sharpe']:.2f}\n"
                 report += f"- **Max Drawdown:** {metrics['max_drawdown_pct']:.2f}%\n\n"
+                if isinstance(exposures, pd.DataFrame) and not exposures.empty:
+                    if "selected_names" in exposures.columns:
+                        report += f"- **Avg Selected Names:** {exposures['selected_names'].mean():.1f}\n"
+                    if "selected_sectors" in exposures.columns:
+                        report += f"- **Avg Active Sectors:** {exposures['selected_sectors'].mean():.1f}\n"
+                    if "open_positions" in exposures.columns:
+                        report += f"- **Avg Open Positions:** {exposures['open_positions'].mean():.1f}\n"
+                    if "forced_exits" in exposures.columns:
+                        report += f"- **Forced Exits / Rebalance:** {exposures['forced_exits'].mean():.2f}\n"
+                    report += "\n"
                 report += "**Sector Betas:**\n"
                 sector_betas = pd.Series(res["sector_betas"]).sort_values(ascending=False)
                 report += sector_betas.to_string()
