@@ -200,6 +200,11 @@ with st.sidebar.expander("Risk Controls"):
         help="If today's session drawdown exceeds this, the circuit breaker blocks new buys.",
     )
     breaker_enabled = st.checkbox("Breaker Enabled", value=True)
+    min_weight_drift = st.slider(
+        "Min Weight Drift", min_value=0.00, max_value=0.10, value=0.05, step=0.005,
+        help="Rebalance trades whose target-vs-current weight gap is below this "
+             "are skipped. Lower = more small trades executed (higher turnover).",
+    )
 
 with st.sidebar.expander("Execution Slicing"):
     slicing_enabled = st.checkbox("Slicing Enabled", value=False)
@@ -238,6 +243,7 @@ def make_config() -> StrategyConfig:
         breaker_dd_from_hwm=float(breaker_dd_from_hwm),
         breaker_dd_intraday=float(breaker_dd_intraday),
         breaker_enabled=bool(breaker_enabled),
+        min_weight_drift=float(min_weight_drift),
         slicing_enabled=bool(slicing_enabled),
         slicing_convexity=float(slicing_convexity),
         slicing_num_children=int(slicing_num_children),
