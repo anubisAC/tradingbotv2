@@ -883,7 +883,7 @@ class PortfolioOptimizer:
                     d = np.sqrt(np.diag(cov_values))
                     corr_values = cov_values / np.outer(d, d)
                     corr = pd.DataFrame(corr_values, index=returns.columns, columns=returns.columns).clip(-1.0, 1.0)
-                    shrinkage_info = f" (LW shrinkage λ={lw.shrinkage_:.3f})"
+                    shrinkage_info = f" (LW shrinkage lambda={lw.shrinkage_:.3f})"
                 except Exception as lw_err:
                     print(f"⚠️ LedoitWolf failed ({lw_err}); using raw sample covariance.")
                     cov = returns.cov()
@@ -929,7 +929,7 @@ class PortfolioOptimizer:
         try:
             lw = LedoitWolf().fit(returns.values)
             cov_values = lw.covariance_
-            shrinkage_info = f" (LW shrinkage λ={lw.shrinkage_:.3f})"
+            shrinkage_info = f" (LW shrinkage lambda={lw.shrinkage_:.3f})"
         except Exception as lw_err:
             print(f"WARNING: Kelly LedoitWolf failed ({lw_err}); using raw sample covariance.")
             cov_values = returns.cov().values
