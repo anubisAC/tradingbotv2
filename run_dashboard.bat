@@ -1,4 +1,4 @@
 @echo off
-echo Starting Phase 2 AI Quant Trader...
-python -m streamlit run app.py
-pause
+cd /d "C:\Users\mo101\Documents\tradingbotv2"
+call venv\Scripts\activate.bat
+streamlit run app.py
