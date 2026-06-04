@@ -47,6 +47,8 @@ from diagnostics_engine import (
     ExecutionFrictionAudit,
     RegimeDetectionValidator
 )
+from attribution_backtest import AttributionBacktest
+
 
 load_dotenv()
 warnings.filterwarnings("ignore")
@@ -1121,9 +1123,10 @@ with tab_research:
 # TAB 3: DIAGNOSTICS (cMDA + Universe Audit)
 # =============================================================================
 with tab_diagnostics:
-    sub_cmda, sub_audit = st.tabs([
+    sub_cmda, sub_audit, sub_attrib = st.tabs([
         "Feature Importance (cMDA)",
         "Universe Audit",
+        "📊 Performance Attribution",
     ])
 
     # ---------------------------------------------------------- cMDA sub-tab
@@ -1321,6 +1324,104 @@ with tab_diagnostics:
             audit_report += f"- **Walks / Test Days:** {wf_r.get('n_walks', 0)} / {wf_r.get('n_days', 0)}\n"
             audit_report += f"- **Universe Jaccard:** {jaccard:.1%}\n" if pd.notna(jaccard) else ""
             st.code(audit_report, language="markdown")
+
+    # ----------------------------------------------------- Attribution Backtest sub-tab
+    with sub_attrib:
+        st.markdown(
+            "Run a walk-forward, long-only backtest of the top-N ML strategy. Decomposes "
+            "realized returns into market beta (SPY), sector tilts, and residual "
+            "stock-selection alpha via regression. This isolates how much P&L comes from "
+            "market timing vs. true stock-picking skill."
+        )
+
+        if "plan" not in st.session_state or "full_prices" not in st.session_state.plan:
+            st.info("👆 Please run the **Manual AI Calculation** in the Research tab first to populate the session data.")
+        else:
+            run_attrib = st.button("Run Attribution Backtest", type="primary", key="run_attrib_btn")
+
+            if run_attrib:
+                plan = st.session_state.plan
+                full_prices = plan.get("full_prices")
+                sector_map = plan.get("sector_map")
+                cfg = make_config()
+
+                buf = io.StringIO()
+                success = True
+                err_msg = ""
+                attrib_result = None
+                with st.spinner("Running attribution backtest (walk-forward training, holding, and regression)..."):
+                    try:
+                        with contextlib.redirect_stdout(buf):
+                            fetcher = DataFetcher()
+                            ohlc = fetcher.fetch_daily_ohlc(list(full_prices.columns), period="3y")
+                            opens = ohlc["Open"]
+                            
+                            backtester = AttributionBacktest()
+                            attrib_result = backtester.run(full_prices, opens, sector_map, cfg)
+                    except Exception as e:
+                        success = False
+                        err_msg = str(e)
+
+                if success and attrib_result:
+                    st.session_state.attribution_result = {
+                        "result": attrib_result,
+                        "stdout": buf.getvalue(),
+                        "computed_at": pd.Timestamp.now(),
+                    }
+                elif not success:
+                    st.error(f"Attribution backtest failed: {err_msg}")
+                    if buf.getvalue():
+                        with st.expander("Partial output", expanded=True):
+                            st.code(buf.getvalue(), language="text")
+            
+            # Render cached result
+            if "attribution_result" in st.session_state:
+                cached = st.session_state.attribution_result
+                res = cached["result"]
+                metrics = res["metrics"]
+                data = res["data"]
+                
+                st.divider()
+                st.caption(
+                    f"Backtest computed at **{cached['computed_at'].strftime('%Y-%m-%d %H:%M:%S')}**."
+                )
+
+                st.subheader("Backtest Equity Curve")
+                equity_curve = data["equity_curve"]
+                fig_eq = px.line(equity_curve, title="Strategy Equity Curve")
+                fig_eq.update_layout(yaxis_title="Cumulative Return", xaxis_title="", showlegend=False)
+                st.plotly_chart(fig_eq, use_container_width=True)
+
+                st.subheader("Performance & Attribution Metrics")
+                with st.container(border=True):
+                    m1, m2, m3, m4, m5 = st.columns(5)
+                    m1.metric("Annualized Alpha", f"{metrics['annualized_alpha_pct']:.2f}%")
+                    m2.metric("SPY Beta", f"{metrics['spy_beta']:.3f}")
+                    m3.metric("R-Squared", f"{metrics['r_squared']:.3f}")
+                    m4.metric("Annualized Sharpe", f"{metrics['annualized_sharpe']:.2f}")
+                    m5.metric("Max Drawdown", f"{metrics['max_drawdown_pct']:.2f}%")
+
+                st.caption(
+                    "**Interpretation:** Near-zero residual alpha combined with a high R-Squared (>0.5) suggests that "
+                    "most of the strategy's returns are explained by exposure to market beta (SPY) and sector tilts, "
+                    "rather than from stock-selection skill ('alpha')."
+                )
+
+                st.divider()
+                st.subheader("Copy Report")
+                report = "**ATTRIBUTION BACKTEST REPORT**\n"
+                report += f"- **Annualized Alpha:** {metrics['annualized_alpha_pct']:.2f}%\n"
+                report += f"- **SPY Beta:** {metrics['spy_beta']:.3f}\n"
+                report += f"- **R-Squared:** {metrics['r_squared']:.3f}\n"
+                report += f"- **Annualized Sharpe:** {metrics['annualized_sharpe']:.2f}\n"
+                report += f"- **Max Drawdown:** {metrics['max_drawdown_pct']:.2f}%\n\n"
+                report += "**Sector Betas:**\n"
+                sector_betas = pd.Series(res["sector_betas"]).sort_values(ascending=False)
+                report += sector_betas.to_string()
+                st.code(report, language="markdown")
+
+                with st.expander("Full backtest output", expanded=False):
+                    st.code(cached["stdout"], language="text")
 
 # =============================================================================
 # TAB 4: SYSTEM AUDIT ENGINE
