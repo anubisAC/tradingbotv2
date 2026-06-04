@@ -1101,7 +1101,12 @@ class ExecutionEngine:
         equity = float(acct.equity)
         positions = self.client.get_all_positions()
         weights = {p.symbol: float(p.market_value) / equity for p in positions}
-        qtys = {p.symbol: float(p.qty) for p in positions}
+        qtys = {}
+        for p in positions:
+            # Use qty_available to prevent rejections from fractional differences
+            # between total vs. available (e.g. from prior fills).
+            avail = getattr(p, "qty_available", None)
+            qtys[p.symbol] = float(avail) if avail is not None else float(p.qty)
         return equity, weights, qtys
 
     # ---- Phase 0: cancel stale work ------------------------------------------------
@@ -1135,6 +1140,24 @@ class ExecutionEngine:
     def _submit_one(self, sym: str, qty: float, limit_price, side, dry_run: bool,
                     side_label: str) -> List[str]:
         """Submit a single order. Returns [order_id] on success, [] otherwise."""
+        original_qty = qty
+        if not dry_run and side == OrderSide.SELL:
+            try:
+                pos = self.client.get_open_position(sym)
+                avail = getattr(pos, "qty_available", None)
+                live_avail = float(avail) if avail is not None else float(pos.qty)
+                clamped_qty = self._floor_to_precision(min(original_qty, live_avail))
+
+                if clamped_qty < original_qty:
+                    print(f"CLAMP SELL {sym}: requested {original_qty:.4f} -> available {live_avail} -> submit {clamped_qty:.4f}")
+                qty = clamped_qty
+
+                if qty <= 1e-9: # Epsilon for float comparison
+                    print(f"Skipping SELL for {sym}, clamped quantity is {qty:.4f}.")
+                    return []
+            except Exception as e:
+                print(f"WARNING: Pre-submit clamp failed for {sym}: {e}. Submitting original qty.")
+
         if dry_run:
             tag = f"LMT ${limit_price:,.2f}" if limit_price is not None else "MKT (no price ref)"
             print(f"[DRY] {side_label:<5} | {sym:<5} | Qty: {qty:,.4f} | {tag}")
@@ -1202,6 +1225,14 @@ class ExecutionEngine:
         return order_ids
 
     # ---- Phase 1: build the plan ---------------------------------------------------
+    @staticmethod
+    def _floor_to_precision(qty: float, precision: int = 9) -> float:
+        """Rounds a quantity DOWN to a specified number of decimal places."""
+        if qty is None or not np.isfinite(qty):
+            return 0.0
+        factor = 10 ** precision
+        return np.floor(qty * factor) / factor
+
     def _apply_exit_discipline(self, current_qtys: Dict[str, float], latest_prices: pd.Series,
                                dry_run: bool) -> List[str]:
         """Check for and apply time stops and stop losses. Returns list of symbols to force-sell."""
@@ -1255,10 +1286,10 @@ class ExecutionEngine:
         pad = self.cfg.limit_order_padding
 
         # Forced exits from exit discipline are always full liquidations.
+        # Route to close_position() via "ALL" qty to avoid stale snapshot math.
         for sym in forced_sells:
             if sym in current_qtys and current_qtys[sym] > 0:
-                price = float(latest_prices.loc[sym]) if sym in latest_prices.index and pd.notna(latest_prices.loc[sym]) else None
-                sells.append((sym, float(current_qtys[sym]), round(price * (1 - pad), 2) if price else None))
+                sells.append((sym, "ALL", None))
 
         # Out-of-universe liquidations (drop-from-top-N): close full position
         for sym, qty in current_qtys.items():
@@ -1270,12 +1301,7 @@ class ExecutionEngine:
             if not dry_run:
                 self.tracker.clear(sym)
 
-            if sym not in latest_prices.index or pd.isna(latest_prices.loc[sym]):
-                # No price reference — flag for market sell
-                sells.append((sym, float(current_qtys[sym]), None))
-                continue
-            price = float(latest_prices.loc[sym])
-            sells.append((sym, float(current_qtys[sym]), round(price * (1 - pad), 2)))
+            sells.append((sym, "ALL", None))
 
         # Rebalance: trims (sells) + new positions / top-ups (buys)
         for sym in target_weights.index:
@@ -1284,25 +1310,40 @@ class ExecutionEngine:
             tgt_w = float(target_weights.loc[sym])
             cur_w = current_weights.get(sym, 0.0)
             drift = abs(tgt_w - cur_w)
-            # Skip tiny drifts UNLESS target is 0 (then we're fully exiting)
-            if drift < self.cfg.min_weight_drift and tgt_w > 0:
+
+            # Full close from rebalance (target weight is zero).
+            if tgt_w == 0 and cur_w > 0:
+                if not any(s[0] == sym for s in sells):  # Avoid duplicate sell orders
+                    sells.append((sym, "ALL", None))
+                if not dry_run:
+                    self.tracker.clear(sym)
+                continue
+
+            # Skip tiny drifts UNLESS target is 0 (handled above)
+            if drift < self.cfg.min_weight_drift:
                 continue
             if sym not in latest_prices.index or pd.isna(latest_prices.loc[sym]):
                 continue
             price = float(latest_prices.loc[sym])
             delta_notional = (tgt_w - cur_w) * equity
-            qty = round(abs(delta_notional) / price, 4)
+            # Do NOT round delta qty, which can round UP. Floor at the last step.
+            qty = abs(delta_notional) / price if price > 0 else 0.0
             if qty <= 0:
                 continue
+
             if delta_notional < 0:
-                safe_sell_qty = min(qty, float(current_qtys.get(sym, 0.0)))
-                sells.append((sym, safe_sell_qty, round(price * (1 - pad), 2)))
-                if tgt_w == 0 and not dry_run and sym in current_qtys:
-                    self.tracker.clear(sym)
+                # Partial trim: clamp to available and round DOWN.
+                held_qty = float(current_qtys.get(sym, 0.0))
+                safe_sell_qty = self._floor_to_precision(min(qty, held_qty))
+                if safe_sell_qty > 0:
+                    sells.append((sym, safe_sell_qty, round(price * (1 - pad), 2)))
             else:
-                buys.append((sym, qty, round(price * (1 + pad), 2)))
-                if current_qtys.get(sym, 0) <= 0:
-                    new_entries.append((sym, price))
+                # round() is fine for buys; broker just fills up to cash available.
+                buy_qty = round(qty, 4)
+                if buy_qty > 0:
+                    buys.append((sym, buy_qty, round(price * (1 + pad), 2)))
+                    if current_qtys.get(sym, 0) <= 0:
+                        new_entries.append((sym, price))
 
         return sells, buys, new_entries
 
@@ -1310,9 +1351,37 @@ class ExecutionEngine:
     def _submit_sells(self, sells, dry_run: bool, equity: float) -> List[str]:
         order_ids = []
         for sym, qty, limit_price in sells:
-            ids = self._execute_potentially_sliced(
-                sym, qty, limit_price, OrderSide.SELL, dry_run, equity)
-            order_ids.extend(ids)
+            if qty == "ALL":
+                # --- Full position close ---
+                if dry_run:
+                    print(f"[DRY] CLOSE | {sym:<5} | liquidating full position")
+                    continue
+                try:
+                    print(f"Attempting to close full position for {sym} via close_position().")
+                    order = self.client.close_position(sym)
+                    order_ids.append(str(order.id))
+                    print(f"[EXEC] CLOSE submitted: {sym} full position")
+                except Exception as e:
+                    print(f"WARNING: close_position for {sym} failed: {e}. "
+                          "Falling back to submitting a sized market sell.")
+                    try:
+                        pos = self.client.get_open_position(sym)
+                        avail = getattr(pos, "qty_available", None)
+                        avail_qty = float(avail) if avail is not None else float(pos.qty)
+                        sell_qty = self._floor_to_precision(avail_qty)
+                        if sell_qty > 0:
+                            # Sized sell doesn't get sliced; it's an emergency fallback.
+                            ids = self._submit_one(sym, sell_qty, None, OrderSide.SELL, dry_run, "SELL")
+                            order_ids.extend(ids)
+                        else:
+                            print(f"Skipping fallback sell for {sym}, available quantity is zero.")
+                    except Exception as fb_e:
+                        print(f"ERROR: Fallback sell for {sym} also failed: {fb_e}")
+            else:
+                # --- Partial trim ---
+                ids = self._execute_potentially_sliced(
+                    sym, qty, limit_price, OrderSide.SELL, dry_run, equity)
+                order_ids.extend(ids)
         return order_ids
 
     # ---- Phase 3: wait for sells, force market on stragglers -----------------------
