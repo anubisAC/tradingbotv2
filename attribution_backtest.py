@@ -32,6 +32,7 @@ class AttributionBacktest:
         sector_map: Dict[str, str],
         config: StrategyConfig,
         rebalance_freq: int = 5,
+        allocation_method: str = "hrp",
     ) -> Dict:
         """
         Executes the backtest and attribution.
@@ -42,6 +43,7 @@ class AttributionBacktest:
             sector_map: Dictionary mapping tickers to GICS sectors.
             config: StrategyConfig instance.
             rebalance_freq: Rebalance period in days.
+            allocation_method: "hrp" or "equal".
 
         Returns:
             A dictionary containing performance metrics, attribution results,
@@ -144,9 +146,17 @@ class AttributionBacktest:
             # 2. Select top N and get weights
             ranked_tickers = scores.sort_values(ascending=False).index.tolist()
             top_tickers = ranked_tickers[:config.top_n]
-            
-            optimizer = PortfolioOptimizer(config, train_closes)
-            weights = optimizer.calculate_hrp_weights(top_tickers)
+
+            if not top_tickers:
+                continue
+
+            if allocation_method == "hrp":
+                optimizer = PortfolioOptimizer(config, train_closes)
+                weights = optimizer.calculate_hrp_weights(top_tickers)
+            elif allocation_method == "equal":
+                weights = pd.Series(1.0 / len(top_tickers), index=top_tickers)
+            else:
+                raise ValueError(f"Unknown allocation_method: {allocation_method}")
             
             # 3. Simulate holding period
             hold_mask = (closes.index > rebalance_date) & (closes.index <= hold_end_date)
@@ -236,16 +246,43 @@ if __name__ == "__main__":
     opens = ohlc["Open"]
 
     backtester = AttributionBacktest()
-    results = backtester.run(closes, opens, sector_map, cfg)
+    
+    print("\n--- Running HRP Backtest ---")
+    results_hrp = backtester.run(closes, opens, sector_map, cfg, allocation_method="hrp")
+    
+    print("\n--- Running Equal-Weight Backtest ---")
+    results_ew = backtester.run(closes, opens, sector_map, cfg, allocation_method="equal")
 
-    print("\n--- Attribution Backtest Results ---")
-    metrics = results["metrics"]
-    print(f"Annualized Alpha:      {metrics['annualized_alpha_pct']:.2f}%")
-    print(f"SPY Beta:              {metrics['spy_beta']:.3f}")
-    print(f"R-Squared:             {metrics['r_squared']:.3f}")
-    print("-" * 20)
-    print(f"Annualized Sharpe:     {metrics['annualized_sharpe']:.2f}")
-    print(f"Max Drawdown:          {metrics['max_drawdown_pct']:.2f}%")
-    print("\n--- Sector Betas ---")
-    sector_betas = pd.Series(results["sector_betas"]).sort_values(ascending=False)
-    print(sector_betas.to_string())
+    # --- Comparison ---
+    hrp_metrics = results_hrp["metrics"]
+    ew_metrics = results_ew["metrics"]
+    
+    comp_df = pd.DataFrame({
+        "HRP": {
+            "Annualized Alpha (%)": hrp_metrics["annualized_alpha_pct"],
+            "SPY Beta": hrp_metrics["spy_beta"],
+            "R-Squared": hrp_metrics["r_squared"],
+            "Annualized Sharpe": hrp_metrics["annualized_sharpe"],
+            "Max Drawdown (%)": hrp_metrics["max_drawdown_pct"],
+        },
+        "Equal-Weight": {
+            "Annualized Alpha (%)": ew_metrics["annualized_alpha_pct"],
+            "SPY Beta": ew_metrics["spy_beta"],
+            "R-Squared": ew_metrics["r_squared"],
+            "Annualized Sharpe": ew_metrics["annualized_sharpe"],
+            "Max Drawdown (%)": ew_metrics["max_drawdown_pct"],
+        }
+    })
+    
+    print("\n--- Allocator Comparison ---")
+    print(comp_df.to_string(float_format="%.3f"))
+    
+    # Verdict
+    hrp_sharpe = hrp_metrics["annualized_sharpe"]
+    ew_sharpe = ew_metrics["annualized_sharpe"]
+    
+    print("\n--- Verdict ---")
+    if ew_sharpe > hrp_sharpe:
+        print("ALLOCATOR LEAK: HRP underperforms naive EW on the traded slice")
+    else:
+        print("HRP justified")
