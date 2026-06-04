@@ -83,7 +83,7 @@ class StrategyConfig:
     # Sector Concentration Cap
     max_names_per_sector: int = 2       # at most N picks from any one GICS sector
     sector_cap_enabled: bool = True
-    sector_neutralize_signal: bool = True
+    sector_neutralize_signal: bool = False  # Tested live default: let sector rotation signal remain in ranks
 
     # Intraday Circuit Breaker (executes at order-submission time, complements GZ)
     breaker_enabled: bool = True
