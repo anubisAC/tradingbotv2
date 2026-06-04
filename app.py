@@ -162,8 +162,8 @@ universe_size = st.sidebar.slider(
     help="How many of the biggest, most actively traded S&P 500 stocks to analyze. 50 is the sweet spot.",
 )
 top_n = st.sidebar.slider(
-    "Top-N Stocks to Buy", min_value=1, max_value=10, value=5,
-    help="Out of the screened universe, how many to actually buy (highest AI scores).",
+    "Top-N Stocks to Buy", min_value=1, max_value=30, value=20,
+    help="Out of the screened universe, how many to actually buy (highest AI scores). Higher breadth helps realize weaker signals.",
 )
 vol_lookback = st.sidebar.slider(
     "Volatility Lookback (days)", min_value=10, max_value=60, value=30,

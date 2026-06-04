@@ -54,7 +54,9 @@ class StrategyConfig:
     universe: tuple = ()     # Will be populated at runtime
     
     # Parameters
-    top_n: int = 5           # Buy the top 5 out of the 50
+    # An IC of ~0.04 needs breadth (fundamental law of active management: IR ≈ IC*sqrt(N));
+    # 5 names cannot realize a weak cross-sectional edge.
+    top_n: int = 20
     vol_lookback: int = 30
     
     # HMM Regime Exposure Multipliers
@@ -63,7 +65,7 @@ class StrategyConfig:
     exposure_bear: float = 0.0
     
     # Execution Friction Controls
-    min_weight_drift: float = 0.05
+    min_weight_drift: float = 0.02
     limit_order_padding: float = 0.002
 
     # Grossman-Zhou Drawdown Controller
