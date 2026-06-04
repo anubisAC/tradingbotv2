@@ -1337,6 +1337,10 @@ with tab_diagnostics:
         if "plan" not in st.session_state or "full_prices" not in st.session_state.plan:
             st.info("👆 Please run the **Manual AI Calculation** in the Research tab first to populate the session data.")
         else:
+            attrib_allocator = st.radio(
+                "Allocation Method for Backtest", ["HRP", "Equal-Weight"], horizontal=True,
+                help="Choose the allocation strategy for this attribution backtest."
+            )
             run_attrib = st.button("Run Attribution Backtest", type="primary", key="run_attrib_btn")
 
             if run_attrib:
@@ -1357,7 +1361,10 @@ with tab_diagnostics:
                             opens = ohlc["Open"]
                             
                             backtester = AttributionBacktest()
-                            attrib_result = backtester.run(full_prices, opens, sector_map, cfg)
+                            attrib_result = backtester.run(
+                                full_prices, opens, sector_map, cfg,
+                                allocation_method=attrib_allocator.split('-')[0].lower()
+                            )
                     except Exception as e:
                         success = False
                         err_msg = str(e)
