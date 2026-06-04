@@ -15,6 +15,7 @@ import time
 import json
 import argparse
 import tracemalloc
+import logging
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import List, Dict, Tuple
@@ -190,18 +191,52 @@ class MarketRegimeHMM:
     Phase 2 AI Risk Manager: Hidden Markov Model.
     Classifies the market into Bull, Neutral, or Bear regimes using SPY returns and volatility.
     """
-    def __init__(self, prices: pd.DataFrame):
+    def __init__(self, prices: pd.DataFrame, verbose: bool = True):
         self.prices = prices
         self.spy = prices["SPY"].dropna()
+        self.verbose = verbose
+
+    @staticmethod
+    def _fit_hmm(features: pd.DataFrame, covariance_type: str) -> tuple[GaussianHMM, bool, bool]:
+        """Fit one HMM candidate while muting hmmlearn's noisy convergence logger.
+
+        Returns (model, converged, monotonic_likelihood). A non-monotonic EM
+        likelihood step is the warning users see as "Model is not converging".
+        """
+        import warnings
+
+        hmm = GaussianHMM(
+            n_components=3,
+            covariance_type=covariance_type,
+            n_iter=500,
+            tol=0.01,
+            random_state=42,
+            min_covar=1e-5,
+        )
+
+        hmm_logger = logging.getLogger("hmmlearn.base")
+        old_level = hmm_logger.level
+        hmm_logger.setLevel(logging.ERROR)
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore")
+                hmm.fit(features)
+        finally:
+            hmm_logger.setLevel(old_level)
+
+        history = list(getattr(hmm.monitor_, "history", []))
+        converged = bool(getattr(hmm.monitor_, "converged", False))
+        monotonic = all(
+            (history[i] - history[i - 1]) >= -max(1e-6, abs(history[i - 1]) * 1e-8)
+            for i in range(1, len(history))
+        )
+        return hmm, converged, monotonic
 
     def detect_regime(self) -> Tuple[str, float]:
         """Trains the HMM, maps the hidden states, and returns today's regime."""
-        print("Training HMM for Market Regime Detection...")
-        
-        # Silence the harmless hmmlearn math warnings
-        import warnings
-        warnings.filterwarnings("ignore")
-        
+        if self.verbose:
+            print("Training HMM for Market Regime Detection...")
+
         returns = self.spy.pct_change().dropna()
         volatility = returns.rolling(10).std().dropna()
         
@@ -209,10 +244,39 @@ class MarketRegimeHMM:
         features = pd.DataFrame({
             'Return': returns[common_idx],
             'Volatility': volatility[common_idx]
-        })
-        
-        hmm = GaussianHMM(n_components=3, covariance_type="full", n_iter=500, tol=0.01, random_state=42)
-        hmm.fit(features)
+        }).dropna()
+
+        if len(features) < 30:
+            raise ValueError(f"HMM needs at least 30 usable SPY observations; got {len(features)}.")
+
+        hmm = None
+        fit_notes = []
+        for covariance_type in ("full", "diag"):
+            try:
+                candidate, converged, monotonic = self._fit_hmm(features, covariance_type)
+            except Exception as e:
+                fit_notes.append(f"{covariance_type} failed: {e}")
+                continue
+
+            if covariance_type == "full" and (not converged or not monotonic):
+                fit_notes.append(
+                    f"full unstable (converged={converged}, monotonic={monotonic}); trying diag"
+                )
+                continue
+
+            hmm = candidate
+            self.hmm_covariance_type = covariance_type
+            self.hmm_converged = converged
+            self.hmm_monotonic = monotonic
+            self.hmm_fit_note = " | ".join(fit_notes)
+            break
+
+        if hmm is None:
+            raise ValueError("HMM regime fit failed: " + " | ".join(fit_notes))
+
+        if self.verbose and fit_notes:
+            print(f"HMM fit note: {' | '.join(fit_notes)}")
+
         hidden_states = hmm.predict(features)
         
         features['State'] = hidden_states
@@ -240,7 +304,8 @@ class MarketRegimeHMM:
         self.regime_history = features
         self.state_map = state_map
 
-        print(f"[Regime Detected] The market is currently in a {current_regime} state.")
+        if self.verbose:
+            print(f"[Regime Detected] The market is currently in a {current_regime} state.")
         return current_regime
 
 class MLSignalGenerator:

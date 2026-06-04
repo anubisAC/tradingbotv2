@@ -16,6 +16,8 @@ from quant_trader import (
     DataFetcher,
     MLSignalGenerator,
     PortfolioOptimizer,
+    MarketRegimeHMM,
+    apply_sector_cap,
 )
 
 
@@ -33,6 +35,11 @@ class AttributionBacktest:
         config: StrategyConfig,
         rebalance_freq: int = 5,
         allocation_method: str = "hrp",
+        use_hmm: bool = False,
+        use_gz: bool = False,
+        use_exit_discipline: bool = False,
+        use_sector_cap: bool = False,
+        use_sector_neutral_signal: bool = False,
     ) -> Dict:
         """
         Executes the backtest and attribution.
@@ -44,15 +51,34 @@ class AttributionBacktest:
             config: StrategyConfig instance.
             rebalance_freq: Rebalance period in days.
             allocation_method: "hrp" or "equal".
+            use_hmm: Scale each rebalance by the historical HMM regime exposure.
+            use_gz: Scale each rebalance by a simulated Grossman-Zhou drawdown floor.
+            use_exit_discipline: Apply time-stop and stop-loss exits during holding windows.
+            use_sector_cap: Select the top basket with the live max-names-per-sector cap.
+            use_sector_neutral_signal: Residualize predictions by sector before ranking.
 
         Returns:
             A dictionary containing performance metrics, attribution results,
             and daily portfolio data.
         """
+        common_index = closes.index.intersection(opens.index).sort_values()
+        common_columns = closes.columns.intersection(opens.columns)
+        closes = closes.loc[common_index, common_columns].sort_index()
+        opens = opens.loc[common_index, common_columns].sort_index()
+
+        if "SPY" not in closes.columns:
+            raise ValueError("Attribution backtest requires SPY in the close/open price data.")
+        sector_map = {t: s for t, s in sector_map.items() if t in closes.columns}
+
         unique_dates = closes.index.sort_values().unique()
         rebalance_dates = unique_dates[::rebalance_freq]
         
         daily_returns = []
+        exposure_rows = []
+        exit_rows = []
+        simulated_holdings = {}
+        equity = 1.0
+        gz_hwm = 1.0
         
         # Walk-forward backtest
         print("Running walk-forward backtest...")
@@ -69,7 +95,9 @@ class AttributionBacktest:
                 continue
             
             # 1. Get AI scores
-            signals = MLSignalGenerator(config, train_closes, train_opens, sector_map)
+            signal_config = StrategyConfig(**vars(config))
+            signal_config.sector_neutralize_signal = bool(use_sector_neutral_signal)
+            signals = MLSignalGenerator(signal_config, train_closes, train_opens, sector_map)
             
             # Train model
             feature_cols = [
@@ -88,7 +116,7 @@ class AttributionBacktest:
             predict_opens = opens.loc[opens.index <= rebalance_date]
             
             # Create a temporary signal generator to get features for prediction date.
-            temp_signals = MLSignalGenerator(config, predict_closes, predict_opens, sector_map)
+            temp_signals = MLSignalGenerator(signal_config, predict_closes, predict_opens, sector_map)
             
             # Adapted logic from calculate_ml_scores to get features for a single historical date
             todays_data = []
@@ -141,11 +169,34 @@ class AttributionBacktest:
             if today_df.empty:
                 continue
                 
-            scores = pd.Series(model.predict(today_df[feature_cols]), index=today_df.index)
+            scores = pd.Series(
+                model.predict(today_df[feature_cols]).astype(np.float64),
+                index=today_df.index,
+            )
+            if signal_config.sector_neutralize_signal and sector_map:
+                sectors_today = pd.Series({t: sector_map.get(t) for t in scores.index}).dropna()
+                n_sectors = int(sectors_today.nunique())
+                if len(sectors_today) > 0 and n_sectors > 1:
+                    valid_tickers = sectors_today.index.tolist()
+                    dummies = pd.get_dummies(sectors_today).astype(float)
+                    y = scores.loc[valid_tickers].values.astype(np.float64)
+                    try:
+                        beta, *_ = np.linalg.lstsq(dummies.values, y, rcond=None)
+                        scores.loc[valid_tickers] = y - dummies.values @ beta
+                        print(f"Sector-neutralized signal: residualized across {n_sectors} sectors")
+                    except np.linalg.LinAlgError as e:
+                        print(f"WARNING: Sector residualization failed ({e}); using raw predictions.")
 
             # 2. Select top N and get weights
             ranked_tickers = scores.sort_values(ascending=False).index.tolist()
-            top_tickers = ranked_tickers[:config.top_n]
+            if use_sector_cap and sector_map:
+                top_tickers = apply_sector_cap(
+                    ranked_tickers, sector_map, config.top_n, config.max_names_per_sector
+                )
+                print(f"Sector cap applied (max {config.max_names_per_sector}/sector): "
+                      f"{ {t: sector_map.get(t, 'Unknown') for t in top_tickers} }")
+            else:
+                top_tickers = ranked_tickers[:config.top_n]
 
             if not top_tickers:
                 continue
@@ -157,13 +208,166 @@ class AttributionBacktest:
                 weights = pd.Series(1.0 / len(top_tickers), index=top_tickers)
             else:
                 raise ValueError(f"Unknown allocation_method: {allocation_method}")
+
+            hmm_exposure = 1.0
+            regime = "DISABLED"
+            hmm_covariance = "DISABLED"
+            hmm_fit_note = ""
+            if use_hmm:
+                try:
+                    hmm_model = MarketRegimeHMM(predict_closes, verbose=False)
+                    regime = hmm_model.detect_regime()
+                    hmm_covariance = getattr(hmm_model, "hmm_covariance_type", "unknown")
+                    hmm_fit_note = getattr(hmm_model, "hmm_fit_note", "")
+                    if regime == "BULL":
+                        hmm_exposure = config.exposure_bull
+                    elif regime == "NEUTRAL":
+                        hmm_exposure = config.exposure_neutral
+                    else:
+                        hmm_exposure = config.exposure_bear
+                except Exception as e:
+                    print(f"WARNING: HMM regime failed on {rebalance_date.date()} ({e}); using 100% exposure.")
+                    regime = "ERROR"
+                    hmm_covariance = "ERROR"
+                    hmm_fit_note = str(e)
+
+            gz_exposure = 1.0
+            if use_gz:
+                gz_hwm = max(gz_hwm, equity)
+                denom = gz_hwm * (1.0 - config.drawdown_floor_alpha)
+                if denom > 0:
+                    raw = (equity - config.drawdown_floor_alpha * gz_hwm) / denom
+                    gz_exposure = float(np.clip(config.drawdown_leverage_k * raw, 0.0, 1.0))
+
+            final_exposure = min(hmm_exposure, gz_exposure)
+            weights = weights * final_exposure
+
+            forced_sells = set()
+            rebalance_prices = closes.loc[rebalance_date]
+            if use_exit_discipline:
+                for ticker, meta in list(simulated_holdings.items()):
+                    if ticker not in rebalance_prices.index or pd.isna(rebalance_prices.loc[ticker]):
+                        continue
+
+                    latest_price = float(rebalance_prices.loc[ticker])
+                    entry_price = float(meta["entry_price"])
+                    days_held = (pd.Timestamp(rebalance_date) - pd.Timestamp(meta["entry_date"])).days
+                    reason = None
+                    if config.time_stop_days > 0 and days_held >= config.time_stop_days:
+                        reason = "TIME_STOP"
+                    elif entry_price > 0 and latest_price <= entry_price * (1.0 - config.stop_loss_pct):
+                        reason = "STOP_LOSS"
+
+                    if reason:
+                        forced_sells.add(ticker)
+                        exit_rows.append({
+                            "date": rebalance_date,
+                            "ticker": ticker,
+                            "reason": reason,
+                            "entry_date": meta["entry_date"],
+                            "entry_price": entry_price,
+                            "exit_price": latest_price,
+                            "days_held": days_held,
+                            "return_pct": (latest_price / entry_price - 1.0) * 100 if entry_price > 0 else np.nan,
+                        })
+                        del simulated_holdings[ticker]
+
+            period_exit_count = len(forced_sells)
+            if forced_sells:
+                weights = weights.drop(index=[t for t in forced_sells if t in weights.index])
+
+            positive_weights = weights[weights > 0].copy()
+            for ticker in list(simulated_holdings.keys()):
+                if ticker not in positive_weights.index:
+                    del simulated_holdings[ticker]
+
+            for ticker in positive_weights.index:
+                if ticker not in simulated_holdings:
+                    entry_price = rebalance_prices.get(ticker, np.nan)
+                    if pd.notna(entry_price) and entry_price > 0:
+                        simulated_holdings[ticker] = {
+                            "entry_price": float(entry_price),
+                            "entry_date": pd.Timestamp(rebalance_date),
+                        }
             
             # 3. Simulate holding period
-            hold_mask = (closes.index > rebalance_date) & (closes.index <= hold_end_date)
-            asset_returns = closes.loc[hold_mask, top_tickers].pct_change().dropna()
-            
-            port_returns = asset_returns.dot(weights)
+            return_mask = (closes.index > rebalance_date) & (closes.index <= hold_end_date)
+            period_index = closes.loc[return_mask].index
+            if len(period_index) == 0:
+                continue
+
+            if positive_weights.empty:
+                port_returns = pd.Series(0.0, index=period_index)
+            else:
+                hold_mask = (closes.index >= rebalance_date) & (closes.index <= hold_end_date)
+                hold_window = closes.loc[hold_mask, positive_weights.index]
+                asset_returns = hold_window.pct_change().dropna()
+                if asset_returns.empty:
+                    continue
+
+                adjusted = asset_returns.copy()
+                if use_exit_discipline:
+                    active = pd.Series(True, index=positive_weights.index)
+                    for dt in adjusted.index:
+                        adjusted.loc[dt, ~active] = 0.0
+                        if pd.Timestamp(dt) >= pd.Timestamp(hold_end_date):
+                            continue
+
+                        latest_prices = hold_window.loc[dt]
+                        deactivate_after_today = []
+                        for ticker in active.index[active]:
+                            meta = simulated_holdings.get(ticker)
+                            if not meta:
+                                continue
+
+                            latest_price = latest_prices.get(ticker, np.nan)
+                            if pd.isna(latest_price):
+                                continue
+
+                            entry_price = float(meta["entry_price"])
+                            days_held = (pd.Timestamp(dt) - pd.Timestamp(meta["entry_date"])).days
+                            reason = None
+                            if config.time_stop_days > 0 and days_held >= config.time_stop_days:
+                                reason = "TIME_STOP"
+                            elif entry_price > 0 and latest_price <= entry_price * (1.0 - config.stop_loss_pct):
+                                reason = "STOP_LOSS"
+
+                            if reason:
+                                deactivate_after_today.append((ticker, reason, float(latest_price), days_held))
+
+                        for ticker, reason, latest_price, days_held in deactivate_after_today:
+                            active.loc[ticker] = False
+                            meta = simulated_holdings.pop(ticker, None)
+                            entry_price = float(meta["entry_price"]) if meta else np.nan
+                            entry_date = meta["entry_date"] if meta else pd.NaT
+                            exit_rows.append({
+                                "date": dt,
+                                "ticker": ticker,
+                                "reason": reason,
+                                "entry_date": entry_date,
+                                "entry_price": entry_price,
+                                "exit_price": latest_price,
+                                "days_held": days_held,
+                                "return_pct": (latest_price / entry_price - 1.0) * 100
+                                if pd.notna(entry_price) and entry_price > 0 else np.nan,
+                            })
+                            period_exit_count += 1
+                port_returns = adjusted.dot(positive_weights.reindex(adjusted.columns).fillna(0.0))
+
             daily_returns.append(port_returns)
+            equity *= float((1.0 + port_returns).prod())
+            exposure_rows.append({
+                "date": rebalance_date,
+                "regime": regime,
+                "hmm_covariance": hmm_covariance,
+                "hmm_fit_note": hmm_fit_note,
+                "hmm_exposure": hmm_exposure,
+                "gz_exposure": gz_exposure,
+                "final_exposure": final_exposure,
+                "gross_weight": float(positive_weights.sum()),
+                "open_positions": len(simulated_holdings),
+                "forced_exits": period_exit_count,
+            })
             
         if not daily_returns:
             raise ValueError("Backtest produced no returns.")
@@ -229,6 +433,8 @@ class AttributionBacktest:
             "data": {
                 "portfolio_returns": portfolio_returns,
                 "equity_curve": equity_curve,
+                "exposures": pd.DataFrame(exposure_rows).set_index("date") if exposure_rows else pd.DataFrame(),
+                "exit_events": pd.DataFrame(exit_rows),
             }
         }
 

@@ -13,6 +13,7 @@ import time
 import json
 import contextlib
 import warnings
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -169,6 +170,10 @@ vol_lookback = st.sidebar.slider(
     "Volatility Lookback (days)", min_value=10, max_value=60, value=30,
     help="History window used to gauge stock stability for volatility weighting.",
 )
+max_names_per_sector = st.sidebar.slider(
+    "Max Names per Sector", min_value=1, max_value=10, value=2, step=1,
+    help="Sector cap used when selecting the final basket. Higher values allow more names from the same GICS sector.",
+)
 
 st.sidebar.divider()
 st.sidebar.header("Allocator")
@@ -238,6 +243,7 @@ def make_config() -> StrategyConfig:
         top_n=top_n,
         vol_lookback=vol_lookback,
         universe_size=universe_size,
+        max_names_per_sector=int(max_names_per_sector),
         allocator=allocator_label.lower(),
         kelly_fraction=float(kelly_fraction),
         kelly_max_weight=float(kelly_max_weight),
@@ -1341,6 +1347,43 @@ with tab_diagnostics:
                 "Allocation Method for Backtest", ["HRP", "Equal-Weight"], horizontal=True,
                 help="Choose the allocation strategy for this attribution backtest."
             )
+            st.markdown("**Live-bot overlays**")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                attrib_use_hmm = st.checkbox(
+                    "HMM regime exposure", value=True,
+                    help="Scale each rebalance by the historical SPY HMM regime exposure."
+                )
+                attrib_use_sector_cap = st.checkbox(
+                    "Sector cap", value=True,
+                    help="Use the live max-names-per-sector basket selection rule."
+                )
+            with c2:
+                attrib_use_gz = st.checkbox(
+                    "GZ drawdown floor", value=True,
+                    help="Simulate the Grossman-Zhou high-water-mark exposure overlay."
+                )
+                attrib_use_sector_neutral = st.checkbox(
+                    "Sector-neutral signal", value=True,
+                    help="Residualize ML predictions by GICS sector before ranking."
+                )
+            with c3:
+                attrib_use_exit_discipline = st.checkbox(
+                    "Exit discipline", value=True,
+                    help="Apply time-stop and stop-loss exits inside each holding window."
+                )
+                attrib_rebalance_freq = st.number_input(
+                    "Rebalance days", min_value=1, max_value=30, value=5, step=1,
+                    help="Holding window between attribution rebalances."
+                )
+
+            if attrib_use_sector_cap:
+                cfg_preview = make_config()
+                st.caption(
+                    f"Sector cap uses max {cfg_preview.max_names_per_sector} names per sector. "
+                    f"Exit discipline uses {cfg_preview.time_stop_days} day time-stop and "
+                    f"{cfg_preview.stop_loss_pct:.0%} stop-loss."
+                )
             run_attrib = st.button("Run Attribution Backtest", type="primary", key="run_attrib_btn")
 
             if run_attrib:
@@ -1363,17 +1406,34 @@ with tab_diagnostics:
                             backtester = AttributionBacktest()
                             attrib_result = backtester.run(
                                 full_prices, opens, sector_map, cfg,
-                                allocation_method=attrib_allocator.split('-')[0].lower()
+                                rebalance_freq=int(attrib_rebalance_freq),
+                                allocation_method=attrib_allocator.split('-')[0].lower(),
+                                use_hmm=bool(attrib_use_hmm),
+                                use_gz=bool(attrib_use_gz),
+                                use_exit_discipline=bool(attrib_use_exit_discipline),
+                                use_sector_cap=bool(attrib_use_sector_cap),
+                                use_sector_neutral_signal=bool(attrib_use_sector_neutral),
                             )
                     except Exception as e:
                         success = False
                         err_msg = str(e)
+                        buf.write("\n\nTRACEBACK:\n")
+                        buf.write(traceback.format_exc())
 
                 if success and attrib_result:
                     st.session_state.attribution_result = {
                         "result": attrib_result,
                         "stdout": buf.getvalue(),
                         "computed_at": pd.Timestamp.now(),
+                        "settings": {
+                            "allocator": attrib_allocator,
+                            "rebalance_freq": int(attrib_rebalance_freq),
+                            "hmm": bool(attrib_use_hmm),
+                            "gz": bool(attrib_use_gz),
+                            "exit_discipline": bool(attrib_use_exit_discipline),
+                            "sector_cap": bool(attrib_use_sector_cap),
+                            "sector_neutral_signal": bool(attrib_use_sector_neutral),
+                        },
                     }
                 elif not success:
                     st.error(f"Attribution backtest failed: {err_msg}")
@@ -1392,6 +1452,23 @@ with tab_diagnostics:
                 st.caption(
                     f"Backtest computed at **{cached['computed_at'].strftime('%Y-%m-%d %H:%M:%S')}**."
                 )
+                settings = cached.get("settings", {})
+                if settings:
+                    enabled = [
+                        label for key, label in [
+                            ("hmm", "HMM"),
+                            ("gz", "GZ"),
+                            ("exit_discipline", "Exit discipline"),
+                            ("sector_cap", "Sector cap"),
+                            ("sector_neutral_signal", "Sector-neutral signal"),
+                        ]
+                        if settings.get(key)
+                    ]
+                    st.caption(
+                        f"Allocator: **{settings.get('allocator', 'n/a')}** | "
+                        f"Rebalance: **{settings.get('rebalance_freq', 'n/a')}d** | "
+                        f"Overlays: **{', '.join(enabled) if enabled else 'None'}**"
+                    )
 
                 st.subheader("Backtest Equity Curve")
                 equity_curve = data["equity_curve"]
@@ -1414,9 +1491,45 @@ with tab_diagnostics:
                     "rather than from stock-selection skill ('alpha')."
                 )
 
+                exposures = data.get("exposures", pd.DataFrame())
+                if isinstance(exposures, pd.DataFrame) and not exposures.empty:
+                    st.subheader("Live Overlay Exposure Path")
+                    exp_cols = [c for c in ["hmm_exposure", "gz_exposure", "final_exposure"] if c in exposures.columns]
+                    fig_exp = px.line(
+                        exposures[exp_cols],
+                        title="HMM / GZ Exposure Multipliers by Rebalance",
+                    )
+                    fig_exp.update_layout(yaxis_title="Exposure", xaxis_title="")
+                    st.plotly_chart(fig_exp, use_container_width=True)
+                    with st.expander("Exposure ledger", expanded=False):
+                        st.dataframe(exposures, use_container_width=True)
+
+                exit_events = data.get("exit_events", pd.DataFrame())
+                if isinstance(exit_events, pd.DataFrame) and not exit_events.empty:
+                    st.subheader("Exit Discipline Events")
+                    e1, e2 = st.columns(2)
+                    e1.metric("Forced Exits", f"{len(exit_events):,}")
+                    e2.metric("Avg Exit Return", f"{exit_events['return_pct'].mean():.2f}%")
+                    with st.expander("Exit event ledger", expanded=False):
+                        st.dataframe(exit_events, use_container_width=True)
+
                 st.divider()
                 st.subheader("Copy Report")
                 report = "**ATTRIBUTION BACKTEST REPORT**\n"
+                if settings:
+                    enabled = [
+                        label for key, label in [
+                            ("hmm", "HMM"),
+                            ("gz", "GZ"),
+                            ("exit_discipline", "Exit discipline"),
+                            ("sector_cap", "Sector cap"),
+                            ("sector_neutral_signal", "Sector-neutral signal"),
+                        ]
+                        if settings.get(key)
+                    ]
+                    report += f"- **Allocator:** {settings.get('allocator', 'n/a')}\n"
+                    report += f"- **Rebalance Days:** {settings.get('rebalance_freq', 'n/a')}\n"
+                    report += f"- **Live Overlays:** {', '.join(enabled) if enabled else 'None'}\n"
                 report += f"- **Annualized Alpha:** {metrics['annualized_alpha_pct']:.2f}%\n"
                 report += f"- **SPY Beta:** {metrics['spy_beta']:.3f}\n"
                 report += f"- **R-Squared:** {metrics['r_squared']:.3f}\n"
