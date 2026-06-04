@@ -1406,13 +1406,7 @@ with tab_system_audit:
             res_comp2 = t_audit.validate_forward_return_calculation()
             
             audit_bar.progress(50, text="Comp 3: Analyzing IC Translation...")
-            c3_data = dataset_oos.dropna(subset=['_pred', 'target_fwd_ret'])
-            if not c3_data.empty:
-                res_comp3 = ICtoReturnsTranslator.compute_ic_return_decomposition(
-                    c3_data['_pred'], c3_data['target_fwd_ret']
-                )
-            else:
-                res_comp3 = {"ic_trap_indicator": {"interpretation": "N/A", "trap_strength": 0}, "realized_statistics": {}}
+            res_comp3 = ICtoReturnsTranslator.compute_ic_return_decomposition(dataset_oos)
                 
             audit_bar.progress(60, text="Comp 4: Stress-Testing Allocators...")
             a_audit = AllocatorStressTest()

@@ -142,34 +142,65 @@ class ICtoReturnsTranslator:
     
     @staticmethod
     def compute_ic_return_decomposition(
-        model_predictions: pd.Series,
-        actual_returns: pd.Series,
+        oos_df: pd.DataFrame,
+        pred_col: str = "_pred",
+        ret_col: str = "target_fwd_ret",
     ) -> Dict:
-        """
-        Decompose portfolio return into IC contribution and realized returns.
-        """
-        ic, _ = spearmanr(model_predictions, actual_returns)
-        
-        mean_actual = actual_returns.mean()
-        std_actual = actual_returns.std()
-        sharpe_actual = mean_actual / (std_actual + 1e-6)
-        
-        ic_trap_strength = max(0.0, abs(float(ic)) - sharpe_actual if pd.notna(ic) else 0)
-        
+        """Per-date cross-sectional rank IC vs realized tercile long-short spread.
+        An 'IC trap' = predictions rank names correctly (mean_ic > 0) but the
+        realized top-minus-bottom return spread fails to materialize (<= 0)."""
+        df = oos_df.copy()
+        if "Date" not in df.columns and (df.index.name is not None
+                                         or isinstance(df.index, pd.MultiIndex)):
+            df = df.reset_index()
+        if "Date" not in df.columns or pred_col not in df.columns or ret_col not in df.columns:
+            return {
+                "rank_ic": 0.0,
+                "realized_statistics": {},
+                "ic_trap_indicator": {"trap_strength": 0.0, "interpretation": " NO DATA"},
+            }
+
+        daily_ic, daily_spread = [], []
+        for _, g in df.groupby("Date"):
+            g = g[[pred_col, ret_col]].dropna()
+            if len(g) < 6 or g[pred_col].nunique() < 2:
+                continue
+            ic, _ = spearmanr(g[pred_col], g[ret_col])
+            if pd.notna(ic):
+                daily_ic.append(float(ic))
+            hi = g[pred_col].quantile(0.66)
+            lo = g[pred_col].quantile(0.34)
+            top = g.loc[g[pred_col] >= hi, ret_col].mean()
+            bot = g.loc[g[pred_col] <= lo, ret_col].mean()
+            if pd.notna(top) and pd.notna(bot):
+                daily_spread.append(float(top - bot))
+
+        mean_ic = float(np.mean(daily_ic)) if daily_ic else 0.0
+        mean_spread = float(np.mean(daily_spread)) if daily_spread else 0.0
+
+        if mean_ic <= 0:
+            interp = " NO/NEGATIVE IC"
+            trap = 0.0
+        elif mean_spread <= 0:
+            interp = " IC TRAP (ranking does not translate to returns)"
+            trap = float(mean_ic)
+        elif mean_spread < 0.001:
+            interp = " WEAK TRANSLATION"
+            trap = float(max(0.0, mean_ic) * 0.5)
+        else:
+            interp = " IC TRANSLATES TO SPREAD"
+            trap = 0.0
+
         return {
-            "rank_ic": float(ic) if pd.notna(ic) else 0.0,
+            "rank_ic": mean_ic,
             "realized_statistics": {
-                "mean_return": float(mean_actual),
-                "std_return": float(std_actual),
-                "sharpe_ratio": float(sharpe_actual),
+                "mean_daily_rank_ic": mean_ic,
+                "mean_5d_longshort_spread": mean_spread,
+                "n_days": len(daily_ic),
             },
             "ic_trap_indicator": {
-                "trap_strength": float(ic_trap_strength),
-                "interpretation": (
-                    "SEVERE IC TRAP" if ic_trap_strength > 0.3
-                    else "MODERATE IC TRAP" if ic_trap_strength > 0.1
-                    else "IC ALIGNED WITH RETURNS"
-                ),
+                "trap_strength": float(trap),
+                "interpretation": interp,
             },
         }
 
