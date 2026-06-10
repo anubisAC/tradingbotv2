@@ -39,6 +39,10 @@ from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus
 
 load_dotenv()
 
+YFINANCE_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".yfinance_cache")
+os.makedirs(YFINANCE_CACHE_DIR, exist_ok=True)
+yf.set_tz_cache_location(YFINANCE_CACHE_DIR)
+
 # -----------------------------------------------------------------------------
 # CONFIGURATION
 # -----------------------------------------------------------------------------
@@ -150,7 +154,7 @@ class DataFetcher:
             return liquid_tickers, sector_map
 
         except Exception as e:
-            print(f"⚠️ Screener failed, falling back to safe list. Error: {e}")
+            print(f"WARNING: Screener failed, falling back to safe list. Error: {e}")
             return (["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AVGO", "TSLA", "LLY", "V"], {})
 
     @staticmethod
@@ -550,7 +554,7 @@ class MLSignalGenerator:
         n = len(unique_dates)
         min_required = train_window + purge_days + test_window
         if n < min_required:
-            print(f"⚠️ Walk-forward needs ≥{min_required} dates, have {n}. Skipping.")
+            print(f"WARNING: Walk-forward needs >={min_required} dates, have {n}. Skipping.")
             return {"n_days": 0, "mean_ic": float("nan"), "std_ic": float("nan"),
                     "ic_ir_ann": float("nan"), "hit_rate": float("nan"), "n_walks": 0}
 
@@ -616,7 +620,7 @@ class MLSignalGenerator:
         n = len(unique_dates)
         min_required = train_window + purge_days + test_window
         if n < min_required:
-            print(f"⚠️ Rescreened walk-forward needs ≥{min_required} dates, have {n}. Skipping.")
+            print(f"WARNING: Rescreened walk-forward needs >={min_required} dates, have {n}. Skipping.")
             return {"n_days": 0, "mean_ic": float("nan"), "std_ic": float("nan"),
                     "ic_ir_ann": float("nan"), "hit_rate": float("nan"), "n_walks": 0}
 
@@ -649,7 +653,7 @@ class MLSignalGenerator:
             try:
                 walk_dataset = self._engineer_features(walk_closes)
             except Exception as e:
-                print(f"⚠️ Walk feature engineering failed (skipping walk): {e}")
+                print(f"WARNING: Walk feature engineering failed (skipping walk): {e}")
                 test_start_idx += step
                 continue
 
@@ -719,7 +723,7 @@ class MLSignalGenerator:
         for feat, cid in zip(feature_cols, cluster_ids):
             clusters.setdefault(int(cid), []).append(feat)
 
-        print(f"\n🔬 cMDA: {len(clusters)} cluster(s) at distance threshold {dist_threshold}")
+        print(f"\ncMDA: {len(clusters)} cluster(s) at distance threshold {dist_threshold}")
         for cid, feats in sorted(clusters.items()):
             print(f"   Cluster {cid}: {feats}")
 
@@ -733,7 +737,7 @@ class MLSignalGenerator:
         if len(train) == 0 or len(val) == 0:
             raise ValueError("cMDA: empty train or validation partition")
         print(f"   Train rows: {len(train)} (< {pd.Timestamp(cutoff).date()})  "
-              f"Val rows: {len(val)} (≥ {pd.Timestamp(cutoff).date()})")
+              f"Val rows: {len(val)} (>= {pd.Timestamp(cutoff).date()})")
 
         model = xgb.XGBRegressor(n_estimators=100, max_depth=3,
                                  learning_rate=0.05, random_state=random_state)
@@ -773,7 +777,7 @@ class MLSignalGenerator:
                .reset_index(drop=True))
         out["rank"] = out.index + 1
 
-        print("\n📋 cMDA Feature-Cluster Importance (higher = more useful to the model):")
+        print("\ncMDA Feature-Cluster Importance (higher = more useful to the model):")
         with pd.option_context("display.max_colwidth", None, "display.width", 200):
             print(out.to_string(index=False))
         return out
@@ -951,7 +955,7 @@ class PortfolioOptimizer:
                     corr = pd.DataFrame(corr_values, index=returns.columns, columns=returns.columns).clip(-1.0, 1.0)
                     shrinkage_info = f" (LW shrinkage lambda={lw.shrinkage_:.3f})"
                 except Exception as lw_err:
-                    print(f"⚠️ LedoitWolf failed ({lw_err}); using raw sample covariance.")
+                    print(f"WARNING: LedoitWolf failed ({lw_err}); using raw sample covariance.")
                     cov = returns.cov()
                     corr = returns.corr().clip(-1.0, 1.0)
             else:
@@ -1010,7 +1014,7 @@ class PortfolioOptimizer:
 
         total = float(f_frac.sum())
         if total <= 0:
-            print("WARNING: Kelly: all weights non-positive after clipping (negative μ basket); "
+            print("WARNING: Kelly: all weights non-positive after clipping (negative mu basket); "
                   "falling back to equal-weight.")
             weights = pd.Series(1.0 / len(selected_tickers), index=selected_tickers)
         else:
@@ -1050,7 +1054,7 @@ class DrawdownController:
         except FileNotFoundError:
             return {}
         except (json.JSONDecodeError, OSError) as e:
-            print(f"⚠️ GZ state unreadable ({e}); seeding from current equity.")
+            print(f"WARNING: GZ state unreadable ({e}); seeding from current equity.")
             return {}
 
     def _save_state(self, hwm: float) -> None:
@@ -1058,13 +1062,14 @@ class DrawdownController:
             with open(self.state_path, "w") as f:
                 json.dump({"hwm": hwm, "last_updated": datetime.now(timezone.utc).isoformat()}, f)
         except OSError as e:
-            print(f"⚠️ Could not persist GZ state to {self.state_path}: {e}")
+            print(f"WARNING: Could not persist GZ state to {self.state_path}: {e}")
 
-    def update_and_get_exposure(self, current_equity: float) -> float:
+    def update_and_get_exposure(self, current_equity: float, persist: bool = True) -> float:
         state = self._load_state()
         prev_hwm = float(state.get("hwm", current_equity))
         hwm = max(prev_hwm, current_equity)
-        self._save_state(hwm)
+        if persist:
+            self._save_state(hwm)
 
         denom = hwm * (1.0 - self.alpha)
         if denom <= 0:
@@ -1101,7 +1106,7 @@ class HoldingsTracker:
             with open(self.state_path, "w") as f:
                 json.dump(serializable_state, f, indent=2)
         except OSError as e:
-            print(f"⚠️ Could not persist holdings state to {self.state_path}: {e}")
+            print(f"WARNING: Could not persist holdings state to {self.state_path}: {e}")
 
     def record_entry(self, symbol: str, price: float, date: datetime) -> None:
         """Record a new entry if one doesn't already exist for the symbol."""
@@ -1265,7 +1270,7 @@ class ExecutionEngine:
         schedule = self._compute_slice_schedule(
             total_qty, self.cfg.slicing_num_children, self.cfg.slicing_convexity)
         display = [int(q) if q == int(q) else round(q, 4) for q in schedule]
-        print(f"SLICING {side_label} {sym} {total_qty} → {len(schedule)} children: {display}")
+        print(f"SLICING {side_label} {sym} {total_qty} -> {len(schedule)} children: {display}")
 
         order_ids: List[str] = []
         sleep_seconds = (self.cfg.slicing_window_minutes * 60.0) / max(1, len(schedule) - 1)
@@ -1277,11 +1282,11 @@ class ExecutionEngine:
             # per child is a future enhancement.
             ids = self._submit_one(sym, child_qty, limit_price, side, dry_run, side_label)
             order_ids.extend(ids)
-            print(f"  └ Child {i + 1}/{len(schedule)} submitted: "
+            print(f"  Child {i + 1}/{len(schedule)} submitted: "
                   f"{sym} qty={child_qty} @ ${limit_price:,.2f}")
             if i < len(schedule) - 1:
                 if dry_run:
-                    print(f"  └ [DRY] Would sleep {sleep_seconds:.0f}s before next child")
+                    print(f"  [DRY] Would sleep {sleep_seconds:.0f}s before next child")
                 else:
                     # NOTE: blocking sleep is acceptable for the daily rebalance cadence.
                     # Move this to an async scheduler when intraday execution is added.
@@ -1472,7 +1477,7 @@ class ExecutionEngine:
                     print(f"WARNING: status check failed for {oid}: {e}")
                     still_open.append(oid)
             if len(still_open) < len(pending):
-                print(f"  {len(pending) - len(still_open)} filled — {len(still_open)} still open at {elapsed}s")
+                print(f"  {len(pending) - len(still_open)} filled - {len(still_open)} still open at {elapsed}s")
             pending = still_open
 
         if not pending:
@@ -1514,7 +1519,7 @@ class ExecutionEngine:
                 if not market_ids:
                     break
             if market_ids:
-                print(f"WARNING: {len(market_ids)} market sell(s) still unconfirmed — proceeding anyway.")
+                print(f"WARNING: {len(market_ids)} market sell(s) still unconfirmed - proceeding anyway.")
 
     # ---- Phase 4 & 5: scale and submit buys ---------------------------------------
     def _submit_buys_with_cash_budget(self, buys, dry_run: bool, equity: float):
@@ -1565,7 +1570,7 @@ class ExecutionEngine:
         if not self.cfg.breaker_enabled:
             return True, "ok", "breaker disabled"
         if dry_run:
-            return True, "ok", "dry run — breaker informational only"
+            return True, "ok", "dry run - breaker informational only"
 
         try:
             equity = float(self.client.get_account().equity)
@@ -1580,7 +1585,7 @@ class ExecutionEngine:
             if hwm > 0:
                 trailing_dd = max(0.0, (hwm - equity) / hwm)
                 if trailing_dd >= self.cfg.breaker_dd_from_hwm:
-                    return False, "hwm", (f"trailing DD {trailing_dd:.2%} ≥ "
+                    return False, "hwm", (f"trailing DD {trailing_dd:.2%} >= "
                                           f"limit {self.cfg.breaker_dd_from_hwm:.2%} "
                                           f"(HWM ${hwm:,.2f}, equity ${equity:,.2f})")
 
@@ -1589,7 +1594,7 @@ class ExecutionEngine:
             self._session_open_equity = equity
         intraday_dd = max(0.0, (self._session_open_equity - equity) / self._session_open_equity)
         if intraday_dd >= self.cfg.breaker_dd_intraday:
-            return False, "intraday", (f"session DD {intraday_dd:.2%} ≥ "
+            return False, "intraday", (f"session DD {intraday_dd:.2%} >= "
                                       f"limit {self.cfg.breaker_dd_intraday:.2%} "
                                       f"(session open ${self._session_open_equity:,.2f}, equity ${equity:,.2f})")
 
@@ -1628,7 +1633,7 @@ class ExecutionEngine:
         elif not allow_buys:
             print(f"BREAKER: blocking buys only. Reason: {reason}")
         else:
-            print(f"Circuit breaker: ALLOW — {reason}")
+            print(f"Circuit breaker: ALLOW - {reason}")
 
         # Exit discipline pre-flight
         forced_sells = self._apply_exit_discipline(current_qtys, latest_prices, dry_run)
@@ -1650,7 +1655,7 @@ class ExecutionEngine:
         # de-risk), but new buys are blocked until equity recovers.
         if not allow_buys:
             if buys:
-                print(f"Breaker tripped — dropping {len(buys)} planned buy(s).")
+                print(f"Breaker tripped - dropping {len(buys)} planned buy(s).")
             buys = []
 
         # Phase 2 + 3
@@ -1730,7 +1735,7 @@ def run_strategy(dry_run: bool, enable_slicing: bool = False):
             raise
 
     gz = DrawdownController(cfg.drawdown_floor_alpha, cfg.drawdown_leverage_k, cfg.gz_state_path)
-    exposure_gz = gz.update_and_get_exposure(equity)
+    exposure_gz = gz.update_and_get_exposure(equity, persist=not dry_run)
     final_exposure = min(exposure_gz, exposure_hmm)
     print(f"[Risk] HMM exposure: {exposure_hmm:.2f} | GZ exposure: {exposure_gz:.2f} | Final: {final_exposure:.2f}")
 
@@ -1775,7 +1780,7 @@ def run_universe_audit():
     whether the inflated walk-forward IC under the today-screened panel is being
     driven by liquidity-rank look-ahead. Does NOT trade."""
     print("=" * 64)
-    print("UNIVERSE AUDIT — testing for liquidity-rank look-ahead")
+    print("UNIVERSE AUDIT - testing for liquidity-rank look-ahead")
     print("=" * 64)
 
     cfg = StrategyConfig()
@@ -1819,12 +1824,12 @@ def run_universe_audit():
                     "overnight_ret", "intraday_ret", "overnight_ret_5d",
                     "overnight_neg", "rv_w", "rv_m"]
 
-    print("🚶 Running rescreened walk-forward...")
+    print("Running rescreened walk-forward...")
     wf = signals._compute_walkforward_ic_rescreened(
         closes, dollar_vol, feature_cols, top_n=cfg.universe_size
     )
     print("\n" + "=" * 64)
-    print("AUDIT RESULT — walk-forward IC with per-walk training-window screening")
+    print("AUDIT RESULT - walk-forward IC with per-walk training-window screening")
     print("=" * 64)
     print(f"   Walks:                       {wf['n_walks']}")
     print(f"   Test days:                   {wf['n_days']}")
@@ -1835,7 +1840,7 @@ def run_universe_audit():
     print(f"   Avg walk-to-walk universe Jaccard: "
           f"{wf.get('avg_walk_to_walk_universe_overlap', float('nan')):.2%}")
     print("=" * 64)
-    print("Compare to today-screened walk-forward: mean IC ≈ 0.106, IR(ann) ≈ 7.65")
+    print("Compare to today-screened walk-forward: mean IC ~= 0.106, IR(ann) ~= 7.65")
     return wf
 
 
@@ -1860,7 +1865,7 @@ if __name__ == "__main__":
         run_universe_audit()
     elif args.cmda:
         print("=" * 64)
-        print("cMDA DIAGNOSTIC MODE — no trades will be placed")
+        print("cMDA DIAGNOSTIC MODE - no trades will be placed")
         print("=" * 64)
         cfg = StrategyConfig()
         fetcher = DataFetcher()

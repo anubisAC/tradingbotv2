@@ -12,3 +12,4 @@ scikit-learn
 requests
 lxml
 tabulate
+tqdm
