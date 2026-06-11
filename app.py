@@ -210,7 +210,7 @@ with st.sidebar.expander("Risk Controls"):
     )
     breaker_enabled = st.checkbox("Breaker Enabled", value=True)
     min_weight_drift = st.slider(
-        "Min Weight Drift", min_value=0.00, max_value=0.10, value=0.05, step=0.005,
+        "Min Weight Drift", min_value=0.00, max_value=0.10, value=0.02, step=0.005,
         help="Rebalance trades whose target-vs-current weight gap is below this "
              "are skipped. Lower = more small trades executed (higher turnover).",
     )
