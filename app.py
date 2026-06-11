@@ -1344,10 +1344,9 @@ with tab_diagnostics:
             "look inflated. **Observational only** - no trades are placed."
         )
         st.caption(
-            "Tests: full legacy set, production momentum-only set, "
-            "momentum+volatility, and volatility-only. The live ranker now uses "
-            "`PRODUCTION_FEATURES`, which removes `overnight_ret`, "
-            "`overnight_neg`, `intraday_ret`, `vol_20d`, `rv_w`, and `rv_m`."
+            "Tests: production full set, momentum-only, momentum+volatility, "
+            "and volatility-only. The live ranker uses `PRODUCTION_FEATURES`, "
+            "currently the full feature set because it won the real rescreened audit."
         )
 
         run_ablation = st.button(
@@ -1405,7 +1404,7 @@ with tab_diagnostics:
             )
 
             best = summary.iloc[0]
-            current = summary[summary["feature_set"] == "production_momentum_only"]
+            current = summary[summary["feature_set"] == "production_full"]
             current_ic = (
                 float(current.iloc[0]["mean_ic"]) if len(current) else float("nan")
             )
