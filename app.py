@@ -38,6 +38,8 @@ from quant_trader import (
     DrawdownController,
     apply_sector_cap,
     run_universe_audit,
+    run_feature_ablation_audit,
+    PRODUCTION_FEATURES,
 )
 from diagnostics_engine import (
     FeatureIntegrityAudit,
@@ -701,16 +703,17 @@ with tab_research:
                          "Weak: 0–0.01 · Negative: ≤ 0.",
                 )
                 q2.metric(
-                    "Walk-fwd Mean IC",
+                    "Today-Screened IC",
                     f"{wf_mean:.4f}" if pd.notna(wf_mean) else "N/A",
-                    help="Rolling 504-day train / 5-day purge / 20-day test walk-forward IC, "
-                         "averaged across all walks. The most reliable signal-strength estimate.",
+                    help="Rolling walk-forward IC on the today-screened top-50 panel. "
+                         "Useful as a quick diagnostic, but inflated by liquidity-rank look-ahead. "
+                         "Use Diagnostics > Universe Audit for the real IC baseline.",
                 )
                 q3.metric(
-                    "Walk-fwd IR (ann.)",
+                    "Today-Screened IR",
                     f"{wf_ir:.2f}" if pd.notna(wf_ir) else "N/A",
-                    help="Annualized IR of daily ICs across walks. "
-                         ">2 strong · >1 good · >0.5 acceptable · >4 likely leakage.",
+                    help="Annualized IR of daily ICs on the today-screened panel. "
+                         "Use the Universe Audit / Feature Ablation tabs for real rescreened IC.",
                 )
                 q4.metric(
                     "Hit Rate",
@@ -720,7 +723,7 @@ with tab_research:
                 )
 
                 st.caption(
-                    f"Walk-forward aggregated **{wf_days:d}** test days · "
+                    f"Today-screened walk-forward aggregated **{wf_days:d}** test days · "
                     f"Shuffled-target IC: **{shuf_ic:.4f}** ({shuf_label}) · "
                     f"Single-window IC ({window}d): **{mean_ic:.4f}**"
                     if pd.notna(wf_mean) and pd.notna(shuf_ic) and pd.notna(mean_ic)
@@ -1111,7 +1114,7 @@ with tab_research:
                 wf_r = ic_metrics.get("walkforward") or {}
                 if wf_r.get("n_days", 0):
                     report += (
-                        f"- **Walk-forward IC:** mean {wf_r['mean_ic']:.4f} | "
+                        f"- **Today-screened walk-forward IC:** mean {wf_r['mean_ic']:.4f} | "
                         f"IR(ann) {wf_r['ic_ir_ann']:.2f} | "
                         f"hit {wf_r['hit_rate']:.1%} | "
                         f"{wf_r['n_days']} test days across {wf_r['n_walks']} walks "
@@ -1129,9 +1132,10 @@ with tab_research:
 # TAB 3: DIAGNOSTICS (cMDA + Universe Audit)
 # =============================================================================
 with tab_diagnostics:
-    sub_cmda, sub_audit, sub_attrib = st.tabs([
+    sub_cmda, sub_audit, sub_ablation, sub_attrib = st.tabs([
         "Feature Importance (cMDA)",
         "Universe Audit",
+        "Feature Ablation",
         "📊 Performance Attribution",
     ])
 
@@ -1330,6 +1334,94 @@ with tab_diagnostics:
             audit_report += f"- **Walks / Test Days:** {wf_r.get('n_walks', 0)} / {wf_r.get('n_days', 0)}\n"
             audit_report += f"- **Universe Jaccard:** {jaccard:.1%}\n" if pd.notna(jaccard) else ""
             st.code(audit_report, language="markdown")
+
+    # ------------------------------------------------- Feature Ablation sub-tab
+    with sub_ablation:
+        st.markdown(
+            "Compares feature sets using the **same broad S&P 500 per-walk "
+            "rescreening** as the Universe Audit. This is the real-IC test path; "
+            "the normal manual run diagnostics are still today-screened and can "
+            "look inflated. **Observational only** - no trades are placed."
+        )
+        st.caption(
+            "Tests: full legacy set, production momentum-only set, "
+            "momentum+volatility, and volatility-only. The live ranker now uses "
+            "`PRODUCTION_FEATURES`, which removes `overnight_ret`, "
+            "`overnight_neg`, `intraday_ret`, `vol_20d`, `rv_w`, and `rv_m`."
+        )
+
+        run_ablation = st.button(
+            "Run Feature Ablation Audit", type="primary", key="run_feature_ablation_btn"
+        )
+
+        if run_ablation:
+            buf = io.StringIO()
+            success = True
+            err_msg = ""
+            ablation_result = None
+            with st.spinner("Running feature ablation on broad rescreened universe..."):
+                try:
+                    with contextlib.redirect_stdout(buf):
+                        ablation_result = run_feature_ablation_audit()
+                except Exception as e:
+                    success = False
+                    err_msg = str(e)
+
+            if success and ablation_result:
+                st.session_state.feature_ablation_result = {
+                    "result": ablation_result,
+                    "stdout": buf.getvalue(),
+                    "computed_at": pd.Timestamp.now(),
+                }
+            elif not success:
+                st.error(f"Feature ablation failed: {err_msg}")
+                if buf.getvalue():
+                    with st.expander("Partial output", expanded=True):
+                        st.code(buf.getvalue(), language="text")
+
+        if "feature_ablation_result" in st.session_state:
+            cached = st.session_state.feature_ablation_result
+            result = cached["result"]
+            summary = result["summary"].copy()
+
+            st.divider()
+            st.caption(
+                f"Ablation computed at **{cached['computed_at'].strftime('%Y-%m-%d %H:%M:%S')}**. "
+                "Sorted by real rescreened mean IC."
+            )
+
+            display_summary = summary.copy()
+            display_summary["hit_rate"] = display_summary["hit_rate"].map(lambda x: f"{x:.1%}")
+            display_summary["avg_walk_to_walk_universe_overlap"] = display_summary[
+                "avg_walk_to_walk_universe_overlap"
+            ].map(lambda x: f"{x:.1%}" if pd.notna(x) else "N/A")
+            st.dataframe(
+                display_summary.style.format({
+                    "mean_ic": "{:.4f}",
+                    "std_ic": "{:.4f}",
+                    "ic_ir_ann": "{:.2f}",
+                }),
+                width="stretch",
+            )
+
+            best = summary.iloc[0]
+            current = summary[summary["feature_set"] == "production_momentum_only"]
+            current_ic = (
+                float(current.iloc[0]["mean_ic"]) if len(current) else float("nan")
+            )
+            st.info(
+                f"Best feature set: **{best['feature_set']}** "
+                f"(IC {best['mean_ic']:.4f}, IR {best['ic_ir_ann']:.2f}). "
+                f"Production set IC: **{current_ic:.4f}**."
+            )
+
+            with st.expander("Full ablation output", expanded=False):
+                st.code(cached["stdout"], language="text")
+
+            report = "**FEATURE ABLATION AUDIT - broad S&P 500 + per-walk rescreening**\n"
+            report += f"- **Production features:** {', '.join(PRODUCTION_FEATURES)}\n\n"
+            report += summary.to_markdown(index=False)
+            st.code(report, language="markdown")
 
     # ----------------------------------------------------- Attribution Backtest sub-tab
     with sub_attrib:
@@ -1601,11 +1693,7 @@ with tab_system_audit:
             
             # --- TRAIN OOS MODEL FOR DIAGNOSTICS 3 & 5 ---
             audit_bar.progress(25, text="Training diagnostic XGBoost model...")
-            feature_cols = [
-                "ret_1d", "ret_5d", "ret_20d", "vol_20d", "rsi_14", "ma_slope",
-                "overnight_ret", "intraday_ret", "overnight_ret_5d",
-                "overnight_neg", "rv_w", "rv_m",
-            ]
+            feature_cols = PRODUCTION_FEATURES
             
             # Drop rows where target or all features are NA
             dataset_clean = dataset.dropna(subset=['target_rank'] + feature_cols, how='any')

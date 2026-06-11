@@ -18,6 +18,7 @@ from quant_trader import (
     PortfolioOptimizer,
     MarketRegimeHMM,
     apply_sector_cap,
+    PRODUCTION_FEATURES,
 )
 
 
@@ -100,11 +101,7 @@ class AttributionBacktest:
             signals = MLSignalGenerator(signal_config, train_closes, train_opens, sector_map)
             
             # Train model
-            feature_cols = [
-                "ret_1d", "ret_5d", "ret_20d", "vol_20d", "rsi_14", "ma_slope",
-                "overnight_ret", "intraday_ret", "overnight_ret_5d",
-                "overnight_neg", "rv_w", "rv_m",
-            ]
+            feature_cols = PRODUCTION_FEATURES
             train_dataset = signals._engineer_features(train_closes)
             model = xgb.XGBRegressor(
                 n_estimators=100, max_depth=3, learning_rate=0.05, random_state=42
@@ -141,9 +138,15 @@ class AttributionBacktest:
                     rv_w_val = sq_ret_series.rolling(5).sum().iloc[-1]
                     rv_m_val = sq_ret_series.rolling(22).sum().iloc[-1]
 
-                    if any(pd.isna(v) for v in [overnight_ret_val, intraday_ret_val,
-                                                overnight_ret_5d_val, overnight_neg_val,
-                                                rv_w_val, rv_m_val]):
+                    required_values = {
+                        "overnight_ret": overnight_ret_val,
+                        "intraday_ret": intraday_ret_val,
+                        "overnight_ret_5d": overnight_ret_5d_val,
+                        "overnight_neg": overnight_neg_val,
+                        "rv_w": rv_w_val,
+                        "rv_m": rv_m_val,
+                    }
+                    if any(pd.isna(required_values[f]) for f in feature_cols if f in required_values):
                         continue
                 except IndexError:
                     continue

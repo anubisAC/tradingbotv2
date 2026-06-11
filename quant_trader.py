@@ -47,6 +47,25 @@ yf.set_tz_cache_location(YFINANCE_CACHE_DIR)
 # CONFIGURATION
 # -----------------------------------------------------------------------------
 
+MOMENTUM_FEATURES = [
+    "ret_1d", "ret_5d", "ret_20d", "rsi_14", "ma_slope", "overnight_ret_5d",
+]
+VOLATILITY_FEATURES = ["vol_20d", "rv_w", "rv_m"]
+WEAK_INTRADAY_FEATURES = ["overnight_ret", "overnight_neg", "intraday_ret"]
+FULL_FEATURES = [
+    "ret_1d", "ret_5d", "ret_20d", "vol_20d", "rsi_14", "ma_slope",
+    "overnight_ret", "intraday_ret", "overnight_ret_5d", "overnight_neg",
+    "rv_w", "rv_m",
+]
+MOMENTUM_VOLATILITY_FEATURES = MOMENTUM_FEATURES + VOLATILITY_FEATURES
+PRODUCTION_FEATURES = MOMENTUM_FEATURES
+FEATURE_SETS = {
+    "full": FULL_FEATURES,
+    "production_momentum_only": PRODUCTION_FEATURES,
+    "momentum_volatility": MOMENTUM_VOLATILITY_FEATURES,
+    "volatility_only": VOLATILITY_FEATURES,
+}
+
 @dataclass
 class StrategyConfig:
     # API
@@ -710,9 +729,7 @@ class MLSignalGenerator:
         permuted on a held-out window. Joint permutation preserves within-cluster
         correlation so the importance reflects the cluster's unique contribution,
         not artifacts from breaking inter-feature dependence."""
-        feature_cols = ["ret_1d", "ret_5d", "ret_20d", "vol_20d", "rsi_14", "ma_slope",
-                        "overnight_ret", "intraday_ret", "overnight_ret_5d",
-                        "overnight_neg", "rv_w", "rv_m"]
+        feature_cols = FULL_FEATURES
 
         corr = dataset[feature_cols].corr().clip(-1.0, 1.0)
         dist = np.sqrt(0.5 * (1.0 - corr))
@@ -787,9 +804,7 @@ class MLSignalGenerator:
         dataset = self._engineer_features(self.prices)
         latest_date = dataset.index.max()
         train_data = dataset[dataset.index < (latest_date - pd.Timedelta(days=5))]
-        feature_cols = ["ret_1d", "ret_5d", "ret_20d", "vol_20d", "rsi_14", "ma_slope",
-                        "overnight_ret", "intraday_ret", "overnight_ret_5d",
-                        "overnight_neg", "rv_w", "rv_m"]
+        feature_cols = PRODUCTION_FEATURES
 
         model = xgb.XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.05, random_state=42)
         model.fit(train_data[feature_cols], train_data["target_rank"])
@@ -804,7 +819,7 @@ class MLSignalGenerator:
         self.last_ic_metrics["shuffled_ir"] = shuf_ir
 
         wf = self._compute_walkforward_ic(dataset, feature_cols)
-        print(f"Walk-forward IC | walks={wf['n_walks']} test_days={wf['n_days']} "
+        print(f"Today-screened walk-forward IC (inflated diagnostic) | walks={wf['n_walks']} test_days={wf['n_days']} "
               f"mean={wf['mean_ic']:.4f} std={wf['std_ic']:.4f} "
               f"IR(ann)={wf['ic_ir_ann']:.2f} hit_rate={wf['hit_rate']:.2%}")
         self.last_ic_metrics["walkforward"] = wf
@@ -1820,9 +1835,7 @@ def run_universe_audit():
     dollar_vol = closes.mul(volumes, fill_value=np.nan)
 
     signals = MLSignalGenerator(cfg, closes, opens, sector_map=sector_map_full)
-    feature_cols = ["ret_1d", "ret_5d", "ret_20d", "vol_20d", "rsi_14", "ma_slope",
-                    "overnight_ret", "intraday_ret", "overnight_ret_5d",
-                    "overnight_neg", "rv_w", "rv_m"]
+    feature_cols = FULL_FEATURES
 
     print("Running rescreened walk-forward...")
     wf = signals._compute_walkforward_ic_rescreened(
@@ -1844,6 +1857,86 @@ def run_universe_audit():
     return wf
 
 
+def run_feature_ablation_audit():
+    """Compare feature sets using the same broad S&P 500 per-walk rescreening
+    audit used for the real IC baseline. Does NOT trade."""
+    print("=" * 64)
+    print("FEATURE ABLATION AUDIT - broad S&P 500 + per-walk rescreening")
+    print("=" * 64)
+
+    cfg = StrategyConfig()
+    fetcher = DataFetcher()
+
+    import io
+    import requests
+    header = {"User-Agent": "Mozilla/5.0"}
+    html = requests.get('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies',
+                        headers=header).text
+    table = pd.read_html(io.StringIO(html))
+    df_sp500 = table[0]
+    sp500_tickers = df_sp500['Symbol'].str.replace('.', '-', regex=False).tolist()
+    sector_map_full = dict(zip(
+        df_sp500['Symbol'].str.replace('.', '-', regex=False),
+        df_sp500['GICS Sector']
+    ))
+    print(f"Loaded {len(sp500_tickers)} S&P 500 names from Wikipedia")
+
+    ohlc = fetcher.fetch_daily_ohlc(sp500_tickers + ["SPY"], period="3y")
+    closes = ohlc["Close"]
+    opens = ohlc["Open"]
+    volumes = ohlc["Volume"]
+    if volumes.empty:
+        raise RuntimeError("Volume data missing from yfinance; cannot run ablation audit.")
+
+    common = closes.columns.intersection(opens.columns).intersection(volumes.columns)
+    closes = closes[common]
+    opens = opens[common]
+    volumes = volumes[common]
+    print(f"Broad panel: {len(closes.columns)} tickers, {len(closes)} dates")
+
+    dollar_vol = closes.mul(volumes, fill_value=np.nan)
+    signals = MLSignalGenerator(cfg, closes, opens, sector_map=sector_map_full)
+
+    results = {}
+    for label, feature_cols in FEATURE_SETS.items():
+        print("\n" + "-" * 64)
+        print(f"Testing feature set: {label}")
+        print(f"Features ({len(feature_cols)}): {', '.join(feature_cols)}")
+        wf = signals._compute_walkforward_ic_rescreened(
+            closes, dollar_vol, feature_cols, top_n=cfg.universe_size
+        )
+        wf = dict(wf)
+        wf["features"] = list(feature_cols)
+        wf["n_features"] = len(feature_cols)
+        results[label] = wf
+        print(f"Mean IC: {wf['mean_ic']:.4f} | IR(ann): {wf['ic_ir_ann']:.2f} | "
+              f"Hit: {wf['hit_rate']:.2%} | Days: {wf['n_days']}")
+
+    summary = pd.DataFrame([
+        {
+            "feature_set": label,
+            "n_features": result["n_features"],
+            "mean_ic": result["mean_ic"],
+            "std_ic": result["std_ic"],
+            "ic_ir_ann": result["ic_ir_ann"],
+            "hit_rate": result["hit_rate"],
+            "n_walks": result["n_walks"],
+            "n_days": result["n_days"],
+            "avg_walk_to_walk_universe_overlap": result.get(
+                "avg_walk_to_walk_universe_overlap", float("nan")
+            ),
+        }
+        for label, result in results.items()
+    ]).sort_values("mean_ic", ascending=False).reset_index(drop=True)
+
+    print("\n" + "=" * 64)
+    print("FEATURE ABLATION SUMMARY")
+    print("=" * 64)
+    with pd.option_context("display.width", 200):
+        print(summary.to_string(index=False))
+    return {"results": results, "summary": summary}
+
+
 if __name__ == "__main__":
     tracemalloc.start()
     
@@ -1855,13 +1948,17 @@ if __name__ == "__main__":
                         help="Run Cluster-Based MDA feature-importance diagnostic and exit (no trading).")
     parser.add_argument("--audit-universe", action="store_true",
                         help="Run universe-selection look-ahead audit (broad S&P 500 + per-walk rescreening) and exit.")
+    parser.add_argument("--audit-features", action="store_true",
+                        help="Run rescreened broad-universe feature-set ablation audit and exit.")
     args = parser.parse_args()
 
     # Fail-safe to ensure keys are loaded if not passed through Streamlit
-    if not args.cmda and not args.audit_universe and not os.getenv("APCA_API_KEY_ID"):
+    if not args.cmda and not args.audit_universe and not args.audit_features and not os.getenv("APCA_API_KEY_ID"):
         print("Warning: No Alpaca API keys found in environment. Trades will fail unless --dry-run is used.")
 
-    if args.audit_universe:
+    if args.audit_features:
+        run_feature_ablation_audit()
+    elif args.audit_universe:
         run_universe_audit()
     elif args.cmda:
         print("=" * 64)
